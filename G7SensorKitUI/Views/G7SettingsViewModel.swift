@@ -10,7 +10,6 @@ import Foundation
 import G7SensorKit
 import LoopKit
 import LoopKitUI
-import HealthKit
 
 public enum ColorStyle {
     case glucose, warning, critical, normal, dimmed
@@ -191,7 +190,7 @@ class G7SettingsViewModel: ObservableObject {
 
     var lastGlucoseTrendString: String {
         if let lastReading = lastReading, lastReading.hasReliableGlucose, let trendRate = lastReading.trendRate {
-            return displayGlucosePreference.minuteRateFormatter.string(from: trendRate)!
+            return displayGlucosePreference.formatMinuteRate(trendRate)
         } else {
             return ""
         }
