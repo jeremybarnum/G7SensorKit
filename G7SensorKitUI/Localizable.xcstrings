@@ -1838,7 +1838,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Realizat"
+            "value" : "Gata"
           }
         },
         "ru" : {
@@ -3630,7 +3630,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Detectarea senzorului"
+            "value" : "Detectarea\nSenzorului"
           }
         },
         "ru" : {
@@ -3928,7 +3928,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Senzorul a expirat"
+            "value" : "Senzor\nExpirat"
           }
         },
         "ru" : {
@@ -4077,7 +4077,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Senzorul a eșuat"
+            "value" : "Senzor\nEșuat"
           }
         },
         "ru" : {
@@ -4226,7 +4226,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Problemă cu senzorul"
+            "value" : "Problemă\nSenzor"
           }
         },
         "ru" : {
@@ -4375,7 +4375,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Senzorul se încălzește"
+            "value" : "Încălzire\nSenzor"
           }
         },
         "ru" : {
@@ -4524,7 +4524,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Expirarea senzorului"
+            "value" : "Expirare Senzor"
           }
         },
         "ru" : {
@@ -5132,7 +5132,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pornirea senzorului"
+            "value" : "Pornire Senzor"
           }
         },
         "ru" : {
@@ -5281,7 +5281,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pierdere de semnal"
+            "value" : "Pierdere\nSemnal"
           }
         },
         "ru" : {
@@ -5585,7 +5585,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tendinţă"
+            "value" : "Tendință"
           }
         },
         "ru" : {
@@ -5883,7 +5883,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Încălzirea s-a încheiat"
+            "value" : "Încălzire încheiată"
           }
         },
         "ru" : {
