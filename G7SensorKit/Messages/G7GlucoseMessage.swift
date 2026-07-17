@@ -67,9 +67,7 @@ public struct G7GlucoseMessage: SensorMessage, Equatable {
         }
     }
 
-    // watch-from-stock: `public` (was internal) — transport-injection seam. An external
-    // transport delivering raw control-characteristic frames must construct the stock message.
-    public init?(data: Data) {
+    init?(data: Data) {
         //    0  1  2 3 4 5  6 7  8  9 1011 1213 14 15 1617 18
         //         TTTTTTTT SQSQ       AGAG BGBG SS TR PRPR C
         // 0x4e 00 d5070000 0900 00 01 0500 6100 06 01 ffff 0e

@@ -87,6 +87,7 @@
 		FADE00000000000000000334 /* G7Sensor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17F50E1291EAC6500555EB5 /* G7Sensor.swift */; };
 		FADE00000000000000000335 /* G7GlucoseMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17F50E8291EAC6500555EB5 /* G7GlucoseMessage.swift */; };
 		FADE00000000000000000336 /* G7PeripheralManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17F50E4291EAC6500555EB5 /* G7PeripheralManager.swift */; };
+		FADE00000000000000000337 /* G7SensorKit+WatchTransportSeam.swift in Sources */ = {isa = PBXBuildFile; fileRef = FADE00000000000000000313 /* G7SensorKit+WatchTransportSeam.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -189,6 +190,7 @@
 		C1E7171F292D84FE00DA646F /* G7ProgressBarState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = G7ProgressBarState.swift; sourceTree = "<group>"; };
 		FADE00000000000000000301 /* LoopKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = LoopKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FADE00000000000000000302 /* G7SensorKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = G7SensorKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		FADE00000000000000000313 /* G7SensorKit+WatchTransportSeam.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "G7SensorKit+WatchTransportSeam.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -271,6 +273,7 @@
 				C17F5144291EB45900555EB5 /* CBPeripheral.swift */,
 				C17F50DE291EAC6500555EB5 /* G7CGMManager */,
 				C17F50C9291EAC3800555EB5 /* G7SensorKit.h */,
+				FADE00000000000000000313 /* G7SensorKit+WatchTransportSeam.swift */,
 				C17F5139291EB0D900555EB5 /* GlucoseLimits.swift */,
 				C17F5141291EB34800555EB5 /* Messages */,
 				C1409A08291EC22F006BE8D0 /* OSLog.swift */,
@@ -734,6 +737,7 @@
 				FADE00000000000000000334 /* G7Sensor.swift in Sources */,
 				FADE00000000000000000335 /* G7GlucoseMessage.swift in Sources */,
 				FADE00000000000000000336 /* G7PeripheralManager.swift in Sources */,
+				FADE00000000000000000337 /* G7SensorKit+WatchTransportSeam.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
