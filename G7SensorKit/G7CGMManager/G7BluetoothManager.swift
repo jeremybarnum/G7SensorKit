@@ -128,7 +128,11 @@ class G7BluetoothManager: NSObject {
         super.init()
 
         managerQueue.sync {
+#if os(iOS) // watchOS has no CoreBluetooth state restoration; the watch host owns reconnect policy
             self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
+#else
+            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: nil)
+#endif
         }
     }
 
@@ -334,6 +338,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         }
     }
 
+#if os(iOS) // watchOS has no CoreBluetooth state restoration (willRestoreState / restored-state keys are iOS-only)
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
@@ -344,6 +349,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             }
         }
     }
+#endif
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
