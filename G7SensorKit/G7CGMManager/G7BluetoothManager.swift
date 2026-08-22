@@ -23,6 +23,19 @@ import CoreBluetooth
 public enum G7RadioCensus {
     public static var sink: ((String) -> Void)?
 
+    /// FORK ADDITION (sensor-switch detection, 2026-08-21): every time the radio sees a G7
+    /// peripheral BY NAME — advertisement or system connection event — the name is reported
+    /// here. The census `sink` already carries this information, but as prose; parsing log
+    /// strings to recover it would couple the caller to log formatting.
+    ///
+    /// Exists because a sensor CHANGE is invisible to the manager itself: it auto-connects to
+    /// its persisted identity and never learns that a different sensor has appeared. The radio
+    /// is the one layer that sees both. First real T1D field session (2026-08-21): the watch
+    /// spent three days failing auth against a sensor whose session had ended, while the
+    /// replacement advertised beside it the whole time — 36 sightings in one 92-minute loan.
+    /// Called on CoreBluetooth's queue; the receiver hops queues itself.
+    public static var sensorSighted: ((String) -> Void)?
+
     private static let stateLock = NSLock()
     private static var _connectPendingSince: Date?
     private static var _lastRideSignalAt: Date?
@@ -248,6 +261,7 @@ class G7BluetoothManager: NSObject {
             // active peripheral and ignore it): the census needs D2W's rhythm either way.
             if event == .peerConnected { G7RadioCensus.noteRideSignal() }
             Self.census("connection-event \(event.rawValue == 1 ? "CONNECT" : "disconnect") \(peripheral.name ?? "unnamed") — \(self.activePeripheralIdentifier == nil ? "handling (trigger b)" : "ignored, have active")")
+            if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
                 self.handleDiscoveredPeripheral(peripheral)
@@ -461,6 +475,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         if lastDiscoveryLog[peripheral.identifier].map({ Date().timeIntervalSince($0) > 30 }) ?? true {
             lastDiscoveryLog[peripheral.identifier] = Date()
             Self.census("ad DISCOVERED (trigger c) \(peripheral.name ?? "unnamed") rssi \(RSSI)")
+            if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
         }
 
         managerQueue.async {
