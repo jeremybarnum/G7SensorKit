@@ -537,7 +537,11 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         G7RadioCensus.noteConnectResolved()
-        Self.census("didFailToConnect \(peripheral.name ?? "unnamed")\(error.map { " error=\($0.localizedDescription)" } ?? "")")
+        // The numeric code rides along because the description alone is not greppable-safe:
+        // "maximum number of connections" was nearly missed by a search for "Code=11", and the
+        // code-11 identification itself was an inference from matching text until this line.
+        let codeTag = (error as NSError?).map { " [\($0.domain)#\($0.code)]" } ?? ""
+        Self.census("didFailToConnect \(peripheral.name ?? "unnamed")\(error.map { " error=\($0.localizedDescription)" } ?? "")\(codeTag)")
 
         log.error("%{public}@: %{public}@", #function, String(describing: error))
         if let error = error, let peripheralManager = activePeripheralManager {
