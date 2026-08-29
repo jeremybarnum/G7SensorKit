@@ -335,12 +335,19 @@ class G7BluetoothManager: NSObject {
         super.init()
 
         managerQueue.sync {
-#if os(iOS) // PODLOAN watch-from-stock: watchOS has no CoreBluetooth state restoration; the watch host owns reconnect policy
-            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
-#else
-            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: nil)
-#endif
+            self.centralManager = self.makeCentralManager(queue: self.managerQueue)
         }
+    }
+
+    /// Factory seam so tests can substitute a central manager without the state
+    /// restoration option, which raises an exception outside an app with the
+    /// bluetooth-central background mode.
+    func makeCentralManager(queue: DispatchQueue) -> CBCentralManager {
+#if os(iOS) // PODLOAN watch-from-stock: watchOS has no CoreBluetooth state restoration; the watch host owns reconnect policy
+        return CBCentralManager(delegate: self, queue: queue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
+#else
+        return CBCentralManager(delegate: self, queue: queue, options: nil)
+#endif
     }
 
     // MARK: - Actions
