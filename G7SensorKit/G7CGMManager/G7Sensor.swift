@@ -199,6 +199,10 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
             do {
                 try peripheral.listenToCharacteristic(.authentication)
                 self.pendingAuth = true
+                // The auth subscribe succeeded — the exact gate the stale-wrapper failure
+                // breaks (field 2026-08-30) — so promote this peripheral's state to
+                // persist across disconnects (the unproven-drop rule's counterpart).
+                manager.noteAuthListenEstablished(for: peripheralManager)
             } catch let error {
                 self.delegateQueue.async {
                     self.delegate?.sensor(self, didError: error)

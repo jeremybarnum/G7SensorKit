@@ -162,6 +162,30 @@ class G7BluetoothManager: NSObject {
     /// Isolated to `managerQueue`
     private var managedPeripherals: [UUID:G7PeripheralManager] = [:]
 
+    /// Peripherals whose auth-characteristic subscribe has SUCCEEDED at least once this
+    /// process. The unproven-drop rule in didDisconnect keys on absence: connection state
+    /// EARNS persistence by authing once; until then it is discarded at every disconnect.
+    /// Field 2026-08-30: a warmup-era first contact left the retained wrapper's GATT view
+    /// stale — auth failed for ~50 minutes (timeout / unknownCharacteristic) against a
+    /// sensor D2W was reading every 5 minutes on the same radio, and a force-quit fixed it
+    /// in 0.5 s by doing exactly this discard at process scale. Per-process on purpose:
+    /// that is the scope of the state that goes stale. Isolated to `managerQueue`.
+    private var provenPeripherals: Set<UUID> = []
+
+    /// Called by the sensor layer the moment the auth-characteristic subscribe succeeds —
+    /// the exact gate the stale-wrapper failure breaks — promoting this peripheral's
+    /// wrappers to keep-across-disconnects (the pre-existing behavior). Callable from any
+    /// queue; the set itself is managerQueue-confined.
+    func noteAuthListenEstablished(for peripheralManager: G7PeripheralManager) {
+        let id = peripheralManager.peripheral.identifier
+        managerQueue.async {
+            if !self.provenPeripherals.contains(id) {
+                self.provenPeripherals.insert(id)
+                Self.census("[g7-heal] peripheral PROVEN (auth subscribe ok) — state now persists across disconnects")
+            }
+        }
+    }
+
     var activePeripheralIdentifier: UUID? {
         get {
             return lockedPeripheralIdentifier.value
@@ -529,6 +553,20 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
 
         if peripheral != activePeripheral {
             managedPeripherals.removeValue(forKey: peripheral.identifier)
+        } else if !provenPeripherals.contains(peripheral.identifier) {
+            // THE UNPROVEN-DROP RULE (field 2026-08-30). The active peripheral's wrapper is
+            // deliberately retained across disconnects — correct for a sensor that has
+            // authed (fast 5-minute reconnects, no re-discovery) and poison for one that
+            // never has: the retained GATT view can be a stale warmup-era snapshot, the
+            // skip-filters in discovery never re-read what they think they know, and no
+            // code path can shed it short of a process death. So a never-authed active
+            // peripheral is dropped here like any other: the next connect builds a fresh
+            // wrapper and discovers from scratch — the automated force-quit, applied only
+            // where a session has never worked. The IDENTIFIER intent survives untouched;
+            // the scan keeps targeting the same sensor.
+            managedPeripherals.removeValue(forKey: peripheral.identifier)
+            activePeripheralManager = nil
+            Self.census("[g7-heal] dropped never-authed peripheral state — next connect rediscovers from scratch")
         }
 
         scanAfterDelay()

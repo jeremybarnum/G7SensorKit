@@ -398,6 +398,16 @@ extension G7PeripheralManager {
 // MARK: - Delegate methods executed on the central's queue
 extension G7PeripheralManager: CBPeripheralDelegate {
 
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        // LOG-ONLY witness (2026-08-30): does the G7 ever announce a service change — e.g.
+        // at warmup end — via the canonical CoreBluetooth path? If this line ever appears
+        // in a field log, the right fix for stale GATT views is to honor it (invalidate and
+        // reconfigure); until then the unproven-drop rule in G7BluetoothManager carries the
+        // load. Greppable: [g7-heal].
+        log.error("didModifyServices — %d service(s) invalidated by the sensor", invalidatedServices.count)
+        G7RadioCensus.sink?("[g7-heal] sensor ANNOUNCED service change — \(invalidatedServices.count) service(s) invalidated (didModifyServices fired)")
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         commandLock.lock()
 
