@@ -258,7 +258,18 @@ public class G7CGMManager: CGMManager {
             state.activatedAt = nil
             state.extendedVersion = nil
         }
+        lockedAuthSubscribeFailureStreak.value = 0   // cold rebuild = fresh slate for the streak too
         sensor.scanForNewSensor()
+    }
+
+    /// Consecutive auth-subscribe failures with no intervening reading — the machine-
+    /// readable form of "the sensor connects but never finishes setup". Read by the
+    /// listening UI to swap patience for the twice-proven advice (force-quit / re-acquire)
+    /// once the streak is undeniable. Written on the sensor's delegate queue, read from
+    /// the UI; Locked keeps the cross-thread read honest.
+    private let lockedAuthSubscribeFailureStreak = Locked(0)
+    public var authSubscribeFailureStreak: Int {
+        lockedAuthSubscribeFailureStreak.value
     }
 
     private var device: HKDevice? {
@@ -349,10 +360,25 @@ extension G7CGMManager: G7SensorDelegate {
 
 
     public func sensor(_ sensor: G7Sensor, didError error: Error) {
-        logDeviceCommunication("Sensor error \(error)", type: .error)
+        // Count the subscribe family — only that family. Field 2026-08-30: a fresh
+        // install failed auth-subscribe five times across two processes and a watch
+        // REBOOT (timeout / unknownCharacteristic) while the listening UI ticked
+        // innocently for 40 minutes; both recoveries were app-level cold rebuilds
+        // (forget-and-rescan, force-quit). The streak lets the UI say so. Other sensor
+        // errors have their own recovery stories and must not feed this counter.
+        if "\(error)".contains("enabling notification") {
+            let streak = lockedAuthSubscribeFailureStreak.mutate { $0 += 1 }
+            logDeviceCommunication("Sensor error \(error) — auth-subscribe failure #\(streak) since last reading", type: .error)
+        } else {
+            logDeviceCommunication("Sensor error \(error)", type: .error)
+        }
     }
 
     public func sensor(_ sensor: G7Sensor, didRead message: G7GlucoseMessage) {
+
+        // Any real message from the sensor means the subscribe pipeline works end to
+        // end — the failure streak is over (duplicates included: the pipe delivered).
+        lockedAuthSubscribeFailureStreak.value = 0
 
         guard message != latestReading else {
             logDeviceCommunication("Sensor reading duplicate: \(message)", type: .error)

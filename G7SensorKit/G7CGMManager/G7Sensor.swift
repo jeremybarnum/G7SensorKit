@@ -204,6 +204,11 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
                 // persist across disconnects (the unproven-drop rule's counterpart).
                 manager.noteAuthListenEstablished(for: peripheralManager)
             } catch let error {
+                // Dump what discovery actually returned, at the moment it mattered: an
+                // hour of field toggles (2026-08-30) couldn't distinguish "characteristic
+                // missing from the table" from "subscribe sent, sensor silent" because
+                // the error alone names the step but not the GATT state under it.
+                G7RadioCensus.sink?("auth subscribe FAILED on \(peripheralManager.peripheral.name ?? "unnamed"): \(error) — GATT at failure: \(G7PeripheralManager.gattInventory(peripheralManager.peripheral))")
                 self.delegateQueue.async {
                     self.delegate?.sensor(self, didError: error)
                 }
@@ -213,6 +218,10 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     }
 
     func bluetoothManager(_ manager: G7BluetoothManager, readyingFailed peripheralManager: G7PeripheralManager, with error: Error) {
+        // Same census as the subscribe catch above: discovery-phase failures are the
+        // other half of the 2026-08-30 signature (unknownCharacteristic before the
+        // subscribe was ever attempted).
+        G7RadioCensus.sink?("readying FAILED on \(peripheralManager.peripheral.name ?? "unnamed"): \(error) — GATT at failure: \(G7PeripheralManager.gattInventory(peripheralManager.peripheral))")
         delegateQueue.async {
             self.delegate?.sensor(self, didError: error)
         }
