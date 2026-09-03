@@ -389,7 +389,12 @@ class G7BluetoothManager: NSObject {
             if event == .peerConnected { G7RadioCensus.noteRideSignal() }
             self.lastDeliveryAt = Date()
             self.lastConnectionEventAt = Date()
-            Self.census("connection-event \(event.rawValue == 1 ? "CONNECT" : "disconnect") \(peripheral.name ?? "unnamed") — \(self.activePeripheralIdentifier == nil ? "handling (trigger b)" : "ignored, have active")")
+            // Attribution (2026-09-02): the OS reports connections made by ANY app on this
+            // peripheral. If OUR pending connect is in flight for it, this event is ours (or
+            // shared); otherwise another app — D2W — brought the link up. During a mute this
+            // is the per-window answer to "is D2W connecting while we are not?".
+            let ours = (self.activePeripheral?.identifier == peripheral.identifier) && self.connectPendingSince != nil
+            Self.census("connection-event \(event.rawValue == 1 ? "CONNECT" : "disconnect") \(peripheral.name ?? "unnamed") — \(self.activePeripheralIdentifier == nil ? "handling (trigger b)" : "ignored, have active") · \(ours ? "ours (pending connect in flight)" : "OTHER APP (no pending connect of ours)")")
             if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
