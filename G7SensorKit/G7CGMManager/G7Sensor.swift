@@ -102,6 +102,12 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
         bluetoothManager.delegate = self
     }
 
+    /// Radio census for the [g7-drought] line and the Radio Lab (see G7BluetoothManager.radioSnapshot).
+    func radioSnapshot() -> String { bluetoothManager.radioSnapshotSync() }
+
+    /// Bench probe: recycle the G7 connection from scratch.
+    func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
+
     public func scanForNewSensor() {
         self.sensorID = nil
         bluetoothManager.disconnect()

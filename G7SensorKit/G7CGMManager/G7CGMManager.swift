@@ -250,6 +250,12 @@ public class G7CGMManager: CGMManager {
         return nil
     }
 
+    /// One line separating "our central is dead" from "the sensor is absent" (2026-09-02).
+    public func g7RadioSnapshot() -> String? { sensor.radioSnapshot() }
+
+    /// Radio Lab probe: cancel + re-arm the sensor connection from scratch.
+    public func recycleG7ConnectForLab() { sensor.recycleConnectForLab() }
+
     public func scanForNewSensor() {
         logDeviceCommunication("Forgetting existing sensor and starting scan for new sensor.", type: .connection)
 

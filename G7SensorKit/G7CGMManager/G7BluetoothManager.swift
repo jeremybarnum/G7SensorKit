@@ -172,6 +172,109 @@ class G7BluetoothManager: NSObject {
     /// that is the scope of the state that goes stale. Isolated to `managerQueue`.
     private var provenPeripherals: Set<UUID> = []
 
+    // MARK: - Scan-while-pending (ported by content from next-dev 8c45b1a + bf100bd, 2026-09-02)
+    //
+    // MECHANISM 1 of the 20-40 minute G7 outages (next-dev POD_BLE_PREREGISTRATION.md, confirmed
+    // 2026-08-20: 7 consecutive missed windows pre-fix, 34/34 post-fix): once a sensor is ADOPTED
+    // this class used to arm scanning + connection-event registration only when `activePeripheral
+    // == nil`, so after any disconnect it sat on a bare pending connect — no timeout, no re-arm —
+    // and bluetoothd's duty-cycled connect-scan against a 1-4 s burst every 300 s is a lottery.
+    // D2W (a suspended app living on pending connects) loses the same lottery, which is why the
+    // Dexcom watch app goes dark in the same minute. Field 2026-09-02 19:00-19:30 (build 117):
+    // `retrieved KNOWN peripheral state=0`, then no `scan STARTED` ever, 30 min of silence.
+    //
+    // The fix is a SWITCH (bench A/B, default ON = the proven behavior): arm the scan whenever
+    // the sensor is not connected, and a watchdog that cancels a stuck pending connect and
+    // recycles when nothing has been delivered for a window. Numbers are next-dev's verbatim.
+    // DEFAULT OFF on this line (panel ruling 2026-09-02): the shipped build carries the
+    // instrumentation only; the bench convicts the gate ALONE (Arm B) before it goes live.
+    // Flip: UserDefaults "G7Lab.scanWhilePending" = true. The watchdog is a separate key so
+    // the gate can be tested without it.
+    static var scanWhilePendingEnabled: Bool {
+        UserDefaults.standard.object(forKey: "G7Lab.scanWhilePending") as? Bool ?? false
+    }
+    static var scanWatchdogEnabled: Bool {
+        UserDefaults.standard.object(forKey: "G7Lab.scanWatchdog") as? Bool ?? false
+    }
+    static let scanWatchdogInterval: TimeInterval = 320
+    static let scanWatchdogSilence: TimeInterval = 315
+
+    /// The arm decision — see `G7ScanArmPolicy` (public, so the watch test target can pin it).
+    static func shouldArmScan(peripheralState: CBPeripheralState?, scanWhilePending: Bool) -> Bool {
+        G7ScanArmPolicy.shouldArmScan(peripheralState: peripheralState, scanWhilePending: scanWhilePending)
+    }
+
+    /// Bench probe (Radio Lab): tear down whatever connection state exists and re-arm from
+    /// scratch — the controlled form of the force-quit that has cured every mute in the field.
+    func recycleConnectForLab() {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        let before = managerQueue.sync { radioSnapshot() }
+        Self.census("lab: RECYCLE G7 connect requested — before: \(before)")
+        disconnect()
+        // NOT an immediate re-issue: cancelPeripheralConnection is non-blocking and the #101
+        // guard in handleDiscoveredPeripheral drops a re-issue while the peripheral still reads
+        // `.connecting` (panel refuter, 2026-09-02). The 2 s settle lets the cancel resolve.
+        scanAfterDelay()
+    }
+
+    private var scanWatchdog: DispatchSourceTimer?
+    /// Last moment the sensor delivered anything to us (data or a connection event).
+    private var lastDeliveryAt: Date?
+    /// When the current pending `connect()` was issued; nil when none is pending.
+    private var connectPendingSince: Date?
+    private var lastConnectionEventAt: Date?
+
+    private func armScanWatchdog() {
+        scanWatchdog?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: managerQueue)
+        t.schedule(deadline: .now() + Self.scanWatchdogInterval, repeating: Self.scanWatchdogInterval)
+        t.setEventHandler { [weak self] in self?.scanWatchdogFired() }
+        t.resume()
+        scanWatchdog = t
+        if lastDeliveryAt == nil { lastDeliveryAt = Date() }   // bf100bd: seed so the first check is not 'infinity'
+    }
+
+    private func scanWatchdogFired() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard Self.scanWatchdogEnabled else { return }
+        guard activePeripheral?.state != .connected else { return }
+        let age = lastDeliveryAt.map { -$0.timeIntervalSinceNow } ?? .greatestFiniteMagnitude
+        guard age > Self.scanWatchdogSilence else { return }
+        Self.census("scan-watchdog: NOTHING delivered in \(Int(age))s with acquisition armed — recycling scan + connect · \(radioSnapshot())")
+        if let p = activePeripheral, p.state == .connecting {
+            centralManager.cancelPeripheralConnection(p)
+            connectPendingSince = nil
+        }
+        managerQueue_stopScanning()
+        // Same rule as the lab recycle: re-arm after the cancel has resolved, or the #101 guard
+        // eats the re-issue and the watchdog becomes a no-op that logs.
+        scanAfterDelay()
+    }
+
+    /// One line that separates "our central is dead" from "the sensor is absent": central
+    /// state, scan state, adopted peripheral state, pending-connect age, last delivery age,
+    /// last connection-event age. Callable from the manager queue (the watchdog) or via the
+    /// public accessor below (the loop, when glucose goes stale).
+    private func radioSnapshot() -> String {
+        let now = Date()
+        func age(_ d: Date?) -> String { d.map { "\(Int(now.timeIntervalSince($0)))s" } ?? "never" }
+        let pstate: String
+        switch activePeripheral?.state {
+        case .connected?: pstate = "connected"
+        case .connecting?: pstate = "connecting"
+        case .disconnecting?: pstate = "disconnecting"
+        case .disconnected?: pstate = "disconnected"
+        default: pstate = "none"
+        }
+        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(lastConnectionEventAt)) scanWhilePending=\(Self.scanWhilePendingEnabled) watchdog=\(Self.scanWatchdogEnabled)"
+    }
+
+    /// The loop calls this when glucose is stale during a loan (the [g7-drought] line).
+    func radioSnapshotSync() -> String {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        return managerQueue.sync { radioSnapshot() }
+    }
+
     /// Called by the sensor layer the moment the auth-characteristic subscribe succeeds —
     /// the exact gate the stale-wrapper failure breaks — promoting this peripheral's
     /// wrappers to keep-across-disconnects (the pre-existing behavior). Callable from any
@@ -284,6 +387,8 @@ class G7BluetoothManager: NSObject {
             // in practice, D2W connecting for its reading. Log ALWAYS (even when we have an
             // active peripheral and ignore it): the census needs D2W's rhythm either way.
             if event == .peerConnected { G7RadioCensus.noteRideSignal() }
+            self.lastDeliveryAt = Date()
+            self.lastConnectionEventAt = Date()
             Self.census("connection-event \(event.rawValue == 1 ? "CONNECT" : "disconnect") \(peripheral.name ?? "unnamed") — \(self.activePeripheralIdentifier == nil ? "handling (trigger b)" : "ignored, have active")")
             if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
             if self.activePeripheralIdentifier == nil {
@@ -324,7 +429,7 @@ class G7BluetoothManager: NSObject {
             }
         }
 
-        if activePeripheral == nil {
+        if Self.shouldArmScan(peripheralState: activePeripheral?.state, scanWhilePending: Self.scanWhilePendingEnabled) {
             log.default("Scanning for peripherals and listening for connection events")
 
             centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
@@ -337,8 +442,9 @@ class G7BluetoothManager: NSObject {
                 ],
                 options: nil
             )
-            Self.census("scan STARTED (trigger c armed) + connection-events registered (trigger b armed)")
+            Self.census("scan STARTED (trigger c armed, scanWhilePending=\(Self.scanWhilePendingEnabled), peripheral=\(activePeripheral == nil ? "none" : "adopted")) + connection-events registered (trigger b armed)")
             delegate?.bluetoothManagerScanningStatusDidChange(self)
+            armScanWatchdog()
         }
     }
 
@@ -425,6 +531,7 @@ class G7BluetoothManager: NSObject {
                 }
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
                 G7RadioCensus.noteConnectPending()
+                connectPendingSince = Date()
                 self.centralManager.connect(peripheral)
 
             case .connect:
@@ -508,6 +615,8 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        connectPendingSince = nil
+        lastDeliveryAt = Date()
         dispatchPrecondition(condition: .onQueue(managerQueue))
         G7RadioCensus.noteConnectResolved()
         Self.census("didConnect \(peripheral.name ?? "unnamed")")
@@ -531,7 +640,8 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         // didConnect but neither terminal callback, so a ride that died looked identical
         // to one that never started.
         G7RadioCensus.noteConnectResolved()
-        Self.census("didDisconnect \(peripheral.name ?? "unnamed")\(error.map { " error=\($0.localizedDescription)" } ?? "")")
+        Self.census("didDisconnect \(peripheral.name ?? "unnamed")\(error.map { " error=\($0.localizedDescription) [\(($0 as NSError).domain)#\(($0 as NSError).code)]" } ?? "") · \(radioSnapshot())")
+        connectPendingSince = nil
         log.default("%{public}@: %{public}@", #function, peripheral)
         // Ignore errors indicating the peripheral disconnected remotely, as that's expected behavior
         if let error = error as NSError?, CBError(_nsError: error).code != .peripheralDisconnected {
@@ -618,11 +728,24 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
         case .none, .communication?:
             return
         case .control?:
+            self.lastDeliveryAt = Date()
             self.delegate?.bluetoothManager(self, peripheralManager: manager, didReceiveControlResponse: value)
         case .backfill?:
             self.delegate?.bluetoothManager(self, didReceiveBackfillResponse: value)
         case .authentication?:
             self.delegate?.bluetoothManager(self, peripheralManager: manager, didReceiveAuthenticationResponse: value)
         }
+    }
+}
+
+
+/// The scan-arm policy behind the 20-40 minute outage fix (next-dev 8c45b1a, ported by content
+/// 2026-09-02). Public and CoreBluetooth-free in its inputs so the watch test target can pin it.
+public enum G7ScanArmPolicy {
+    /// nil = no sensor adopted → always arm. Adopted → arm whenever NOT connected (the fix), or
+    /// never (the legacy behavior, kept behind the switch for the bench A/B).
+    public static func shouldArmScan(peripheralState: CBPeripheralState?, scanWhilePending: Bool) -> Bool {
+        guard let state = peripheralState else { return true }
+        return scanWhilePending ? state != .connected : false
     }
 }
