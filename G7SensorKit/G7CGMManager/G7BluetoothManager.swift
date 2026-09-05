@@ -266,7 +266,7 @@ class G7BluetoothManager: NSObject {
         case .disconnected?: pstate = "disconnected"
         default: pstate = "none"
         }
-        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(lastConnectionEventAt)) scanWhilePending=\(Self.scanWhilePendingEnabled) watchdog=\(Self.scanWatchdogEnabled)"
+        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(lastConnectionEventAt)) scanWhilePending=\(Self.scanWhilePendingEnabled) watchdog=\(Self.scanWatchdogEnabled) rearm=\(G7RearmPolicy.current.rawValue)"
     }
 
     /// The loop calls this when glucose is stale during a loan (the [g7-drought] line).
@@ -475,8 +475,20 @@ class G7BluetoothManager: NSObject {
         scanRestartPending.unlock()
         guard !alreadyPending else { return }
 
+        // RE-ARM DELAY (2026-09-05, Jeremy: "why are we so aggressive about reconnecting?").
+        // Stock re-issues the next connect() 2 s after the sensor drops us; the next burst is
+        // ~290 s away, so nothing needs it that early, and a request landing while the sensor is
+        // still tearing down the link it just closed is a plausible way to half-form the next
+        // one. In the E1 soak every connection of the night was OURS — Dexcom's request never
+        // got to go first — and ours is the one the OS then parked. Bench knob G7Lab.rearmMode:
+        // stock (2 s), delay30 (30 s), lateArm (arm ~30 s before the next expected burst so
+        // Dexcom's request is first and we ride it, the original piggyback regime).
+        let delay = G7RearmPolicy.delay(mode: G7RearmPolicy.current, lastDelivery: lastDeliveryAt, now: Date())
+        if G7RearmPolicy.current != .stock {
+            Self.census(String(format: "re-arm in %.0fs (mode %@)", delay, G7RearmPolicy.current.rawValue))
+        }
         DispatchQueue.global(qos: .utility).async {
-            Thread.sleep(forTimeInterval: 2)
+            Thread.sleep(forTimeInterval: delay)
             self.scanRestartPending.lock()
             self._scanRestartPending = false
             self.scanRestartPending.unlock()
@@ -746,6 +758,31 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 
 /// The scan-arm policy behind the 20-40 minute outage fix (next-dev 8c45b1a, ported by content
 /// 2026-09-02). Public and CoreBluetooth-free in its inputs so the watch test target can pin it.
+/// Re-arm timing after the sensor drops the link (see scanAfterDelay). Pure so the bench
+/// can pin it: `.stock` is the 2 s stock re-issue; `.delay30` waits 30 s; `.lateArm` waits
+/// until ~30 s before the next expected burst (the sensor's grid is 300 s from the last
+/// delivery), falling back to 30 s when nothing has been delivered yet.
+public enum G7RearmPolicy: String {
+    case stock, delay30, lateArm
+    public static let key = "G7Lab.rearmMode"
+    public static var current: G7RearmPolicy {
+        G7RearmPolicy(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .stock
+    }
+    public static let period: TimeInterval = 300
+    public static let lateLead: TimeInterval = 30
+    public static func delay(mode: G7RearmPolicy, lastDelivery: Date?, now: Date) -> TimeInterval {
+        switch mode {
+        case .stock: return 2
+        case .delay30: return 30
+        case .lateArm:
+            guard let last = lastDelivery else { return 30 }
+            var target = last.addingTimeInterval(period - lateLead)
+            while target <= now { target = target.addingTimeInterval(period) }   // carry through misses
+            return max(2, min(period, target.timeIntervalSince(now)))
+        }
+    }
+}
+
 public enum G7ScanArmPolicy {
     /// nil = no sensor adopted → always arm. Adopted → arm whenever NOT connected (the fix), or
     /// never (the legacy behavior, kept behind the switch for the bench A/B).
