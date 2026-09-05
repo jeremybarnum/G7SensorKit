@@ -571,6 +571,25 @@ class G7BluetoothManager: NSObject {
                     activePeripheralManager?.delegate = self
                 }
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
+                if !G7RidePolicy.shouldRequestOnDiscovery(rideOnly: G7RidePolicy.rideOnlyEnabled,
+                                                          known: true,
+                                                          peripheralConnected: peripheral.state == .connected) {
+                    // RIDE-ONLY, un-adopted-but-known (after a forget): adopt from the air, put
+                    // NO request of ours on the bond, stop our scan, and wait for Dexcom's link
+                    // to come up as a connection event — the same posture the retrieve-known
+                    // path takes. Without this the arm silently reverted to stock for the
+                    // minutes between a failed join and the next read (field 2026-09-05 15:21).
+                    if centralManager.isScanning {
+                        centralManager.stopScan()
+                        delegate?.bluetoothManagerScanningStatusDidChange(self)
+                    }
+                    centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
+                        SensorServiceUUID.advertisement.cbUUID,
+                        SensorServiceUUID.cgmService.cbUUID
+                    ]])
+                    Self.census("ride-only: adopted \(peripheral.name ?? "unnamed") from the air — no request of ours, scan stopped, waiting for Dexcom's link")
+                    return
+                }
                 G7RadioCensus.noteConnectPending()
                 connectPendingSince = Date()
                 self.centralManager.connect(peripheral)
@@ -820,6 +839,16 @@ public enum G7RidePolicy {
     /// On a connection event: join the link that just came up?
     public static func shouldJoin(rideOnly: Bool, connected: Bool, isAdoptedPeripheral: Bool, alreadyConnected: Bool) -> Bool {
         rideOnly && connected && isAdoptedPeripheral && !alreadyConnected
+    }
+    /// On DISCOVERY of a peripheral the delegate recognises (`.makeActive` — the persisted
+    /// identity matches): issue our own connect() for it? Field 2026-09-05 15:21→15:26: a
+    /// ride-only join connected and got nothing, stock forgot the sensor, and this path put
+    /// our own request straight back on the bond for five minutes — the switch only gated the
+    /// retrieve-known path. With ride-only on and the sensor known, adopt it from the air and
+    /// wait for Dexcom's link; when the peripheral is ALREADY connected (trigger a/b: Dexcom's
+    /// link is up) connect() completes at once and is the join itself, so it stays.
+    public static func shouldRequestOnDiscovery(rideOnly: Bool, known: Bool, peripheralConnected: Bool) -> Bool {
+        !(rideOnly && known && !peripheralConnected)
     }
 }
 
