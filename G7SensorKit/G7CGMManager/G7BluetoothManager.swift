@@ -266,7 +266,7 @@ class G7BluetoothManager: NSObject {
         case .disconnected?: pstate = "disconnected"
         default: pstate = "none"
         }
-        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(lastConnectionEventAt)) scanWhilePending=\(Self.scanWhilePendingEnabled) watchdog=\(Self.scanWatchdogEnabled) rearm=\(G7RearmPolicy.current.rawValue)"
+        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(lastConnectionEventAt)) scanWhilePending=\(Self.scanWhilePendingEnabled) watchdog=\(Self.scanWatchdogEnabled) rearm=\(G7RearmPolicy.current.rawValue) ride=\(G7RidePolicy.rideOnlyEnabled)"
     }
 
     /// The loop calls this when glucose is stale during a loan (the [g7-drought] line).
@@ -399,6 +399,16 @@ class G7BluetoothManager: NSObject {
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
                 self.handleDiscoveredPeripheral(peripheral)
+            } else if G7RidePolicy.shouldJoin(rideOnly: G7RidePolicy.rideOnlyEnabled,
+                                             connected: event == .peerConnected,
+                                             isAdoptedPeripheral: peripheral.identifier == self.activePeripheralIdentifier,
+                                             alreadyConnected: self.activePeripheral?.state == .connected) {
+                // RIDE-ONLY (2026-09-05): we keep NO request of our own on the bond; Dexcom's
+                // link just came up, so join it now — connect() on an already-linked peripheral
+                // completes at once. This is the trigger-b path that has always worked while
+                // the app is awake, promoted to the only path.
+                Self.census("ride-only: Dexcom's link is up — joining \(peripheral.name ?? "unnamed")")
+                self.handleDiscoveredPeripheral(peripheral)
             }
         }
     }
@@ -416,6 +426,20 @@ class G7BluetoothManager: NSObject {
         }
 
         if let peripheralID = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first {
+            if !G7RidePolicy.shouldIssueConnect(rideOnly: G7RidePolicy.rideOnlyEnabled, adopted: true) {
+                // RIDE-ONLY (2026-09-05, Jeremy: "I've always wondered why we don't do that").
+                // The day's arms: Dexcom's request alone on the bond → 90 min clean; Dexcom's
+                // + ours with our app ASLEEP → mute; + ours awake → mute. Our pending request,
+                // by existing, is the cause, and a watch Bluetooth toggle ended a mute at the
+                // next burst. So: no request of ours while a sensor is adopted, no scan either;
+                // register for connection events and join Dexcom's link when it comes up.
+                centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
+                    SensorServiceUUID.advertisement.cbUUID,
+                    SensorServiceUUID.cgmService.cbUUID
+                ]])
+                Self.census("ride-only: no request of ours for \(peripheral.name ?? "unnamed") — connection-events registered, waiting for Dexcom's link")
+                return
+            }
             log.default("Retrieved peripheral %{public}@", peripheral.identifier.uuidString)
             Self.census("scan-start: retrieved KNOWN peripheral \(peripheral.name ?? "unnamed") state=\(peripheral.state.rawValue)")
             handleDiscoveredPeripheral(peripheral)
@@ -780,6 +804,22 @@ public enum G7RearmPolicy: String {
             while target <= now { target = target.addingTimeInterval(period) }   // carry through misses
             return max(2, min(period, target.timeIntervalSince(now)))
         }
+    }
+}
+
+/// Ride-only (2026-09-05): while a sensor is adopted, keep NO pending connect of our own on
+/// the bond and no scan; register for connection events and join Dexcom's link when it comes
+/// up. Pure so the bench can pin it. Un-adopted acquisition is unchanged (nothing to ride yet).
+public enum G7RidePolicy {
+    public static let key = "G7Lab.rideOnly"
+    public static var rideOnlyEnabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? false }
+    /// Should we issue our own connect() for the adopted peripheral?
+    public static func shouldIssueConnect(rideOnly: Bool, adopted: Bool) -> Bool {
+        !(rideOnly && adopted)
+    }
+    /// On a connection event: join the link that just came up?
+    public static func shouldJoin(rideOnly: Bool, connected: Bool, isAdoptedPeripheral: Bool, alreadyConnected: Bool) -> Bool {
+        rideOnly && connected && isAdoptedPeripheral && !alreadyConnected
     }
 }
 
