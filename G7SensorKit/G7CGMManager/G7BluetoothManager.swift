@@ -581,7 +581,7 @@ class G7BluetoothManager: NSObject {
                     // minutes between a failed join and the next read (field 2026-09-05 15:21).
                     if centralManager.isScanning {
                         centralManager.stopScan()
-                        delegate?.bluetoothManagerScanningStatusDidChange(self)
+                        delegate.bluetoothManagerScanningStatusDidChange(self)
                     }
                     centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
                         SensorServiceUUID.advertisement.cbUUID,
