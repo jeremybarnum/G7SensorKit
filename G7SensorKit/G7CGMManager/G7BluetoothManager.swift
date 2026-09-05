@@ -398,7 +398,7 @@ class G7BluetoothManager: NSObject {
             if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
-                self.handleDiscoveredPeripheral(peripheral)
+                self.handleDiscoveredPeripheral(peripheral, viaLinkUp: event == .peerConnected)
             } else if G7RidePolicy.shouldJoin(rideOnly: G7RidePolicy.rideOnlyEnabled,
                                              connected: event == .peerConnected,
                                              isAdoptedPeripheral: peripheral.identifier == self.activePeripheralIdentifier,
@@ -408,7 +408,7 @@ class G7BluetoothManager: NSObject {
                 // completes at once. This is the trigger-b path that has always worked while
                 // the app is awake, promoted to the only path.
                 Self.census("ride-only: Dexcom's link is up — joining \(peripheral.name ?? "unnamed")")
-                self.handleDiscoveredPeripheral(peripheral)
+                self.handleDiscoveredPeripheral(peripheral, viaLinkUp: true)
             }
         }
     }
@@ -454,7 +454,7 @@ class G7BluetoothManager: NSObject {
             Self.census("scan-start: system-connected list = [\(systemConnected.map { $0.name ?? "unnamed" }.joined(separator: ","))] (\(systemConnected.count))")
             for peripheral in systemConnected {
                 log.default("Found system-connected peripheral: %{public}@", peripheral.identifier.uuidString)
-                handleDiscoveredPeripheral(peripheral)
+                handleDiscoveredPeripheral(peripheral, viaLinkUp: true)
             }
         }
 
@@ -542,7 +542,13 @@ class G7BluetoothManager: NSObject {
         return isConnected
     }
 
-    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral) {
+    /// `viaLinkUp`: the caller knows another app's link to this peripheral is UP (a CONNECT
+    /// connection event, or the system-connected list). The CBPeripheral's own `state` cannot
+    /// say so — each app holds its own handle, and ours reads `.disconnected` until WE connect —
+    /// which is how build 170 looped 480 times at 16:37: join → "not connected" → adopt-from-air
+    /// → re-register → the OS re-fires CONNECT → join … and never issued the connect() that IS
+    /// the join. Field 2026-09-05.
+    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral, viaLinkUp: Bool = false) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
         // #101 churn fix (2026-08-10 23:31:52-59): during a failed ride, every scan restart
@@ -573,7 +579,7 @@ class G7BluetoothManager: NSObject {
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
                 if !G7RidePolicy.shouldRequestOnDiscovery(rideOnly: G7RidePolicy.rideOnlyEnabled,
                                                           known: true,
-                                                          peripheralConnected: peripheral.state == .connected) {
+                                                          peripheralConnected: viaLinkUp || peripheral.state == .connected) {
                     // RIDE-ONLY, un-adopted-but-known (after a forget): adopt from the air, put
                     // NO request of ours on the bond, stop our scan, and wait for Dexcom's link
                     // to come up as a connection event — the same posture the retrieve-known
