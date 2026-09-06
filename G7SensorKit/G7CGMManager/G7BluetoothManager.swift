@@ -459,6 +459,19 @@ class G7BluetoothManager: NSObject {
         }
 
         if Self.shouldArmScan(peripheralState: activePeripheral?.state, scanWhilePending: Self.scanWhilePendingEnabled) {
+            if !G7RidePolicy.shouldScanToAcquire(rideOnly: G7RidePolicy.rideOnlyEnabled) {
+                // RIDE-ONLY, build 173: no scan of ours, adopted or not. The connection-event
+                // registration (service UUIDs) delivers Dexcom's next link and we adopt from the
+                // air there — proven 2026-09-06 16:16:40. A scan of ours in the sensor's tail is
+                // what earned the −70 floor in every wedge that was not the pod's.
+                centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
+                    SensorServiceUUID.advertisement.cbUUID,
+                    SensorServiceUUID.cgmService.cbUUID
+                ]])
+                Self.census("ride-only: NO scan (peripheral=\(activePeripheral == nil ? "none" : "known")) — connection-events registered, adopting from Dexcom's next link")
+                delegate?.bluetoothManagerScanningStatusDidChange(self)
+                return
+            }
             log.default("Scanning for peripherals and listening for connection events")
 
             centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
@@ -855,6 +868,24 @@ public enum G7RidePolicy {
     /// link is up) connect() completes at once and is the join itself, so it stays.
     public static func shouldRequestOnDiscovery(rideOnly: Bool, known: Bool, peripheralConnected: Bool) -> Bool {
         !(rideOnly && known && !peripheralConnected)
+    }
+    /// Arm our own acquisition SCAN? Never under ride-only (build 173, 2026-09-06). Six watch
+    /// sysdiagnoses: bluetoothd's per-device signal-quality tally is fed by Dexcom's own
+    /// re-subscribe into the sensor's long tail (ours or not), but the −70 dBm floor that mutes
+    /// the watch is written only for a failure that comes AFTER the 6-s fast scan — and every
+    /// such late failure on record had our scan or our pod link on the chip in that tail
+    /// (23:13, 15:07, 16:07, 16:12 were our scans). Adoption from the air via the
+    /// connection-event registration needs no scan (16:16:40), so under ride-only we never scan.
+    public static func shouldScanToAcquire(rideOnly: Bool) -> Bool {
+        !rideOnly
+    }
+    /// Stock flags a REMOTE disconnect while auth is still pending as "suspected end of session"
+    /// and answers with forget-and-scan (G7Sensor.swift `pendingAuth && wasRemoteDisconnect`).
+    /// Under ride-only a join the sensor closes before auth completes trips that every time
+    /// (15:06:53, 16:06:51) and put our scan into the tail. Keep the identity instead; a real
+    /// replacement sensor arrives on Dexcom's next link and is adopted from the air.
+    public static func shouldForgetOnBareDisconnect(rideOnly: Bool, adopted: Bool) -> Bool {
+        !(rideOnly && adopted)
     }
 }
 

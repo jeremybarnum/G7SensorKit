@@ -356,7 +356,16 @@ extension G7CGMManager: G7SensorDelegate {
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
         if suspectedEndOfSession {
-            scanForNewSensor()
+            // Build 173 (2026-09-06): under ride-only a join the sensor closes before auth
+            // completes is routine, not a session end — stock's forget-and-scan here put our
+            // scan into the sensor's tail at 15:06:53 and 16:06:51 and the daemon wrote the
+            // −70 floor both times. Keep the identity; Dexcom's next link brings the reading,
+            // and a genuinely new sensor is adopted from the air.
+            if G7RidePolicy.shouldForgetOnBareDisconnect(rideOnly: G7RidePolicy.rideOnlyEnabled, adopted: state.sensorID != nil) {
+                scanForNewSensor()
+            } else {
+                logDeviceCommunication("ride-only: disconnect before auth — KEEPING \(state.sensorID ?? "sensor"), waiting for Dexcom's next link (no forget, no scan)", type: .connection)
+            }
         }
     }
 
