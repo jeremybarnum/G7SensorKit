@@ -36,6 +36,14 @@ public enum G7RadioCensus {
     /// Called on CoreBluetooth's queue; the receiver hops queues itself.
     public static var sensorSighted: ((String) -> Void)?
 
+    /// Build 174 tail-exposure instrument (2026-09-06): the adopted sensor's link just closed —
+    /// the start of its advertising tail — and our own acquisition scan just started. The watch
+    /// app logs what of ours was on the radio in the 40 s after each close, one line per window,
+    /// because bluetoothd never tells an app about the failed establishment that writes the
+    /// −70 dBm floor; the exposure is the half we can see. Called on CoreBluetooth's queue.
+    public static var sensorClosed: ((String) -> Void)?
+    public static var scanStarted: (() -> Void)?
+
     private static let stateLock = NSLock()
     private static var _connectPendingSince: Date?
     private static var _lastRideSignalAt: Date?
@@ -484,6 +492,7 @@ class G7BluetoothManager: NSObject {
                 ],
                 options: nil
             )
+            G7RadioCensus.scanStarted?()
             Self.census("scan STARTED (trigger c armed, scanWhilePending=\(Self.scanWhilePendingEnabled), peripheral=\(activePeripheral == nil ? "none" : "adopted")) + connection-events registered (trigger b armed)")
             delegate?.bluetoothManagerScanningStatusDidChange(self)
             armScanWatchdog()
@@ -719,6 +728,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         // didConnect but neither terminal callback, so a ride that died looked identical
         // to one that never started.
         G7RadioCensus.noteConnectResolved()
+        G7RadioCensus.sensorClosed?(peripheral.name ?? "unnamed")
         Self.census("didDisconnect \(peripheral.name ?? "unnamed")\(error.map { " error=\($0.localizedDescription) [\(($0 as NSError).domain)#\(($0 as NSError).code)]" } ?? "") · \(radioSnapshot())")
         connectPendingSince = nil
         log.default("%{public}@: %{public}@", #function, peripheral)
