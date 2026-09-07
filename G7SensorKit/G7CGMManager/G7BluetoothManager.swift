@@ -860,7 +860,11 @@ public enum G7RearmPolicy: String {
 /// up. Pure so the bench can pin it. Un-adopted acquisition is unchanged (nothing to ride yet).
 public enum G7RidePolicy {
     public static let key = "G7Lab.rideOnly"
-    public static var rideOnlyEnabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? false }
+    /// DEFAULT ON since build 176 (2026-09-06): the six-capture verdict is in the mute record —
+    /// ride-only with no scan of ours and the pod held out of the tail ran three phone
+    /// departures with the daemon's judgment at its worst and never wedged. The switch stays
+    /// as a diagnostic override on the Radio Lab.
+    public static var rideOnlyEnabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
     /// Should we issue our own connect() for the adopted peripheral?
     public static func shouldIssueConnect(rideOnly: Bool, adopted: Bool) -> Bool {
         !(rideOnly && adopted)
