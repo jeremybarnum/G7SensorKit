@@ -864,7 +864,16 @@ public enum G7RidePolicy {
     /// ride-only with no scan of ours and the pod held out of the tail ran three phone
     /// departures with the daemon's judgment at its worst and never wedged. The switch stays
     /// as a diagnostic override on the Radio Lab.
-    public static var rideOnlyEnabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+    /// WATCH ONLY: G7SensorKit also compiles into the phone app, whose G7 manager keeps stock
+    /// behaviour — the mute is a watch-daemon phenomenon and the phone was never in the arms.
+    public static var rideOnlyEnabled: Bool {
+        if let v = UserDefaults.standard.object(forKey: key) as? Bool { return v }
+        #if os(watchOS)
+        return true
+        #else
+        return false
+        #endif
+    }
     /// Should we issue our own connect() for the adopted peripheral?
     public static func shouldIssueConnect(rideOnly: Bool, adopted: Bool) -> Bool {
         !(rideOnly && adopted)
