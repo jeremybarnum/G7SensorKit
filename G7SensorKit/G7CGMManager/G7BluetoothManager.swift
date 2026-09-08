@@ -292,6 +292,43 @@ class G7BluetoothManager: NSObject {
         }
     }
 
+    /// One-shot override: the NEXT re-arm scans even under ride-only, and issues a connect
+    /// for an already-adopted sensor. Set only by the user's own "Reconnect CGM" button
+    /// (Jeremy, 2026-09-08: "we can violate ride only when it's a button that I push").
+    ///
+    /// Ride-only exists to keep OUR radio out of the sensor's extended-phase tail
+    /// AUTOMATICALLY — that is where a scan of ours earned the -70 floor. A deliberate tap is
+    /// not the automatic case: someone is standing there watching a stuck CGM, and the
+    /// alternative is waiting up to a full 5-minute window for Dexcom's next link. One scan,
+    /// once, on demand. It does NOT change the policy: the flag is consumed by the first pass
+    /// that uses it, so the very next re-arm is ride-only again.
+    private let forceAcquireLock = NSLock()
+    private var _forceAcquireOnce = false
+    private func consumeForceAcquireOnce() -> Bool {
+        forceAcquireLock.lock(); defer { forceAcquireLock.unlock() }
+        let was = _forceAcquireOnce
+        _forceAcquireOnce = false
+        return was
+    }
+
+    /// Drop the current link and re-acquire the SAME sensor. Keeps the adopted identity
+    /// (`disconnect()` cancels the connection but never clears `activePeripheralIdentifier`),
+    /// so this is the cheap first move for a stuck client — strictly less disruptive than
+    /// "Re-acquire Sensor", which forgets the sensor and rebuilds cold.
+    func recycleConnectForLab() {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        let before = managerQueue.sync {
+            "peripheral=\(activePeripheral.map { "\($0.state.rawValue)" } ?? "none") adopted=\(activePeripheralIdentifier != nil) scanning=\(centralManager.isScanning)"
+        }
+        forceAcquireLock.lock(); _forceAcquireOnce = true; forceAcquireLock.unlock()
+        Self.census("lab: RECONNECT requested by the user — forcing one acquisition pass (ride-only bypassed for this pass only) — before: \(before)")
+        disconnect()
+        // NOT an immediate re-issue: cancelPeripheralConnection is non-blocking and the #101
+        // guard in handleDiscoveredPeripheral drops a re-issue while the peripheral still reads
+        // `.connecting`. The 2 s settle lets the cancel resolve first.
+        scanAfterDelay()
+    }
+
     func disconnect() {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
 
@@ -345,10 +382,14 @@ class G7BluetoothManager: NSObject {
             return
         }
 
+        // Consumed here, after the early-outs: a pass that returns without acting must not
+        // burn the user's tap.
+        let userForced = consumeForceAcquireOnce()
+
         let sensorServices = [SensorServiceUUID.advertisement.cbUUID, SensorServiceUUID.cgmService.cbUUID]
 
         if let peripheralID = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first {
-            if !G7RidePolicy.shouldIssueConnect(rideOnly: Self.rideOnly, adopted: true) {
+            if !userForced, !G7RidePolicy.shouldIssueConnect(rideOnly: Self.rideOnly, adopted: true) {
                 // RIDE-ONLY: no request of ours while a sensor is adopted — the pending connect
                 // is what the daemon's auto-connection turns into failed establishments in the
                 // sensor's tail. Register for connection events and join Dexcom's link when it
@@ -388,7 +429,7 @@ class G7BluetoothManager: NSObject {
         if activePeripheral?.state != .connected {
             centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: sensorServices])
 
-            if G7RidePolicy.shouldScanToAcquire(rideOnly: Self.rideOnly) {
+            if userForced || G7RidePolicy.shouldScanToAcquire(rideOnly: Self.rideOnly) {
                 log.default("Scanning for peripherals and listening for connection events")
                 centralManager.scanForPeripherals(withServices: [SensorServiceUUID.advertisement.cbUUID], options: nil)
                 G7RadioCensus.scanStarted?()

@@ -255,6 +255,10 @@ public class G7CGMManager: CGMManager {
         return nil
     }
 
+    /// Drop the link and re-acquire the SAME sensor, keeping its identity. The user's
+    /// "Reconnect CGM" action; see `G7BluetoothManager.recycleConnectForLab`.
+    public func recycleG7ConnectForLab() { sensor.recycleConnectForLab() }
+
     public func scanForNewSensor() {
         logDeviceCommunication("Forgetting existing sensor and starting scan for new sensor.", type: .connection)
 

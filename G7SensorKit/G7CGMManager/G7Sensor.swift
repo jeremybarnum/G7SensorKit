@@ -105,6 +105,10 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
         bluetoothManager.delegate = self
     }
 
+    /// Re-acquire the SAME sensor without forgetting it — the user's "Reconnect CGM".
+    /// Contrast `scanForNewSensor`, which clears `sensorID` and rebuilds cold.
+    func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
+
     public func scanForNewSensor() {
         self.sensorID = nil
         bluetoothManager.disconnect()
