@@ -33,6 +33,15 @@ public enum G7RadioCensus {
     /// (Ported from the pure/SportMode line, 2026-08-21.)
     public static var sensorSighted: ((String) -> Void)?
 
+    /// Tail-exposure instrument (mute record §5, 2026-09-06): the adopted sensor's link just
+    /// closed — the start of its advertising tail — and our own acquisition scan just started.
+    /// The watch app logs what of ours was on the radio in the 40 s after each close, one line
+    /// per window, because bluetoothd never tells an app about the failed establishment that
+    /// writes the −70 dBm floor; the exposure is the half we can see. Called on CoreBluetooth's
+    /// queue.
+    public static var sensorClosed: ((String) -> Void)?
+    public static var scanStarted: (() -> Void)?
+
     private static let stateLock = NSLock()
     private static var _connectPendingSince: Date?
     private static var _lastRideSignalAt: Date?
@@ -159,13 +168,22 @@ class G7BluetoothManager: NSObject {
     /// Isolated to `managerQueue`
     private var managedPeripherals: [UUID:G7PeripheralManager] = [:]
 
-    // SETTLED 2026-08-25 — no longer lab toggles. All three acquisition doorways proven over
-    // weeks of field use (ride + events + scan together are the piggyback mechanism); the
-    // UserDefaults reads are gone deliberately, so a stale `false` from an old experiment can
-    // never silently disable a doorway. The accessors stay so the call sites read as gates.
-    static var labRideEnabled: Bool { true }
-    static var labEventsEnabled: Bool { true }
-    static var labScanEnabled: Bool { true }
+    // RE-SETTLED 2026-09-08 (mute record §3d–§5, six watch sysdiagnoses on her line). The
+    // 2026-08-25 settlement kept all three doorways (retrieve+connect, connection events, scan)
+    // open at once. That is the configuration her record measured feeding bluetoothd's
+    // per-device signal-quality tally fastest (§3e: stock re-arm + scan, 0→5 in 12 min sitting
+    // still): our pending connect plus our scan on the chip during the sensor's post-read tail
+    // is what turns a failed establishment into the −70 dBm floor that mutes every app on the
+    // bond for 20–45 min. The 20–40 minute outages the August scan fix cured carry that wedge's
+    // exact signature, and the scan "worked" because a direct connect from an active-scan hit
+    // bypasses the parked floor (§3k) — an accidental heal for a wedge it helped cause.
+    //
+    // On watchOS the doorways are now RIDE-ONLY (G7RidePolicy): no connect request of ours and
+    // no scan while a sensor is adopted; register for connection events and JOIN Dexcom's link
+    // when the OS reports it up. Un-adopted acquisition also never scans — adoption from the
+    // air via the connection-event registration is proven (§3k 16:16:40). The phone keeps stock
+    // acquisition: the mute is a watch-daemon phenomenon and the phone was never in the arms.
+    static var rideOnly: Bool { G7RidePolicy.rideOnlyEnabled }
 
     // SCAN WATCHDOG (H14 probe + remedy, 2026-08-20). The night of 08-19 the known-sensor branch sat in
     // a bare pending connect for 37 minutes while the sensor advertised on grid (Mac observer). Whatever
@@ -301,7 +319,16 @@ class G7BluetoothManager: NSObject {
             if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
-                self.handleDiscoveredPeripheral(peripheral)
+                self.handleDiscoveredPeripheral(peripheral, viaLinkUp: event == .peerConnected)
+            } else if G7RidePolicy.shouldJoin(rideOnly: Self.rideOnly,
+                                             connected: event == .peerConnected,
+                                             isAdoptedPeripheral: peripheral.identifier == self.activePeripheralIdentifier,
+                                             alreadyConnected: self.activePeripheral?.state == .connected) {
+                // RIDE-ONLY: we keep NO request of our own on the bond; Dexcom's link just came
+                // up, so join it now — connect() on an already-linked peripheral completes at
+                // once. Trigger (b), promoted from "ignored, have active" to the only path.
+                Self.census("ride-only: Dexcom's link is up — joining \(peripheral.name ?? "unnamed")")
+                self.handleDiscoveredPeripheral(peripheral, viaLinkUp: true)
             }
         }
     }
@@ -318,7 +345,18 @@ class G7BluetoothManager: NSObject {
             return
         }
 
-        if Self.labRideEnabled, let peripheralID = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first {
+        let sensorServices = [SensorServiceUUID.advertisement.cbUUID, SensorServiceUUID.cgmService.cbUUID]
+
+        if let peripheralID = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first {
+            if !G7RidePolicy.shouldIssueConnect(rideOnly: Self.rideOnly, adopted: true) {
+                // RIDE-ONLY: no request of ours while a sensor is adopted — the pending connect
+                // is what the daemon's auto-connection turns into failed establishments in the
+                // sensor's tail. Register for connection events and join Dexcom's link when it
+                // comes up (connectionEventDidOccur).
+                centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: sensorServices])
+                Self.census("ride-only: no request of ours for \(peripheral.name ?? "unnamed") — connection-events registered, waiting for Dexcom's link")
+                return
+            }
             log.default("Retrieved peripheral %{public}@", peripheral.identifier.uuidString)
             Self.census("scan-start: retrieved KNOWN peripheral \(peripheral.name ?? "unnamed") state=\(peripheral.state.rawValue)")
             handleDiscoveredPeripheral(peripheral)
@@ -333,7 +371,7 @@ class G7BluetoothManager: NSObject {
             Self.census("scan-start: system-connected list = [\(systemConnected.map { $0.name ?? "unnamed" }.joined(separator: ","))] (\(systemConnected.count))")
             for peripheral in systemConnected {
                 log.default("Found system-connected peripheral: %{public}@", peripheral.identifier.uuidString)
-                handleDiscoveredPeripheral(peripheral)
+                handleDiscoveredPeripheral(peripheral, viaLinkUp: true)
             }
         }
 
@@ -348,23 +386,20 @@ class G7BluetoothManager: NSObject {
         // managerQueue_stopScanning, and handleDiscoveredPeripheral's #101 guard makes a discovery
         // during a pending connect a no-op, so this cannot churn.
         if activePeripheral?.state != .connected {
-            log.default("Scanning for peripherals and listening for connection events")
+            centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: sensorServices])
 
-            if Self.labEventsEnabled {
-                centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
-                    SensorServiceUUID.advertisement.cbUUID,
-                    SensorServiceUUID.cgmService.cbUUID
-                ]])
+            if G7RidePolicy.shouldScanToAcquire(rideOnly: Self.rideOnly) {
+                log.default("Scanning for peripherals and listening for connection events")
+                centralManager.scanForPeripherals(withServices: [SensorServiceUUID.advertisement.cbUUID], options: nil)
+                G7RadioCensus.scanStarted?()
+                Self.census("scan STARTED (trigger c armed) + connection-events registered (trigger b armed)")
+            } else {
+                // RIDE-ONLY: never scan, adopted or not. A scan of ours in the sensor's tail is
+                // what earned the −70 floor in every wedge that was not the pod's; the
+                // connection-event registration delivers Dexcom's next link and an un-adopted
+                // sensor is adopted from the air there.
+                Self.census("ride-only: NO scan (peripheral=\(activePeripheral == nil ? "none" : "known")) — connection-events registered, adopting from Dexcom's next link")
             }
-
-            if Self.labScanEnabled {
-                centralManager.scanForPeripherals(withServices: [
-                        SensorServiceUUID.advertisement.cbUUID
-                    ],
-                    options: nil
-                )
-            }
-            Self.census("scan STARTED (lab: a=\(Self.labRideEnabled) b=\(Self.labEventsEnabled) c=\(Self.labScanEnabled)) — trigger c \(Self.labScanEnabled ? "armed" : "DISABLED BY LAB"), events \(Self.labEventsEnabled ? "armed" : "DISABLED BY LAB")")
             delegate?.bluetoothManagerScanningStatusDidChange(self)
         }
         armScanWatchdog()
@@ -423,7 +458,12 @@ class G7BluetoothManager: NSObject {
         return isConnected
     }
 
-    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral) {
+    /// `viaLinkUp`: the caller knows another app's link to this peripheral is UP (a CONNECT
+    /// connection event, or the system-connected list). The CBPeripheral's own `state` cannot
+    /// say so — each app holds its own handle, and ours reads `.disconnected` until WE connect
+    /// (her build 170 looped 480 times on exactly that: join → "not connected" → re-register →
+    /// the OS re-fires CONNECT → join … never issuing the connect() that IS the join).
+    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral, viaLinkUp: Bool = false) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
         // #101 churn fix (2026-08-10 23:31:52-59): during a failed ride, every scan restart
@@ -452,6 +492,22 @@ class G7BluetoothManager: NSObject {
                     activePeripheralManager?.delegate = self
                 }
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
+                if !G7RidePolicy.shouldRequestOnDiscovery(rideOnly: Self.rideOnly, known: true,
+                                                          peripheralConnected: viaLinkUp || peripheral.state == .connected) {
+                    // RIDE-ONLY, known-but-unlinked (a connection event that was a disconnect,
+                    // or a sighting after a forget): adopt from the air, put NO request of ours
+                    // on the bond, and wait for Dexcom's link to come up as a connection event.
+                    if centralManager.isScanning {
+                        centralManager.stopScan()
+                        delegate.bluetoothManagerScanningStatusDidChange(self)
+                    }
+                    centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: [
+                        SensorServiceUUID.advertisement.cbUUID,
+                        SensorServiceUUID.cgmService.cbUUID
+                    ]])
+                    Self.census("ride-only: adopted \(peripheral.name ?? "unnamed") from the air — no request of ours, waiting for Dexcom's link")
+                    return
+                }
                 G7RadioCensus.noteConnectPending()
                 self.centralManager.connect(peripheral)
 
@@ -561,6 +617,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         // didConnect but neither terminal callback, so a ride that died looked identical
         // to one that never started.
         G7RadioCensus.noteConnectResolved()
+        G7RadioCensus.sensorClosed?(peripheral.name ?? "unnamed")
         // [domain#code] alongside Apple's prose (from the pure line, where a grep for Code=11
         // returned zero while 34 connection-limit failures sat in the log as text only).
         Self.census("didDisconnect \(peripheral.name ?? "unnamed")\(error.map { " [\(($0 as NSError).domain)#\(($0 as NSError).code)] \($0.localizedDescription)" } ?? "")")
@@ -638,5 +695,56 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
         case .authentication?:
             self.delegate?.bluetoothManager(self, peripheralManager: manager, didReceiveAuthenticationResponse: value)
         }
+    }
+}
+
+/// Ride-only (mute record §5, ported by content 2026-09-08): while a sensor is adopted, keep NO
+/// pending connect of our own on the bond and no scan; register for connection events and join
+/// Dexcom's link when it comes up. Pure so the bench can pin it.
+///
+/// Why: bluetoothd keeps one accept-list entry per device shared by every app, and a per-device
+/// signal-quality tally (5.8-h window, threshold 5). A link that forms and dies before encryption
+/// (HCI 0x3E) counts; at count 5 a failure that comes AFTER the daemon's 6-s fast scan makes its
+/// retry park a −70 dBm floor on the entry — below wrist-to-arm RSSI — and every app on the bond
+/// is mute until a strong burst or a Bluetooth toggle. The counter is fed by Dexcom's own
+/// re-subscribe into the sensor's long tails (not ours to prevent); the LATE failure that writes
+/// the floor happened, on record, only with our scan or our pod link on the chip in that tail.
+public enum G7RidePolicy {
+    public static let key = "G7Lab.rideOnly"
+    /// WATCH ONLY. G7SensorKit also compiles into the phone app, whose manager keeps stock
+    /// behaviour — the mute is a watch-daemon phenomenon. The key is a diagnostic override.
+    public static var rideOnlyEnabled: Bool {
+        if let v = UserDefaults.standard.object(forKey: key) as? Bool { return v }
+        #if os(watchOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+    /// Should we issue our own connect() for the adopted peripheral?
+    public static func shouldIssueConnect(rideOnly: Bool, adopted: Bool) -> Bool {
+        !(rideOnly && adopted)
+    }
+    /// On a connection event: join the link that just came up?
+    public static func shouldJoin(rideOnly: Bool, connected: Bool, isAdoptedPeripheral: Bool, alreadyConnected: Bool) -> Bool {
+        rideOnly && connected && isAdoptedPeripheral && !alreadyConnected
+    }
+    /// On DISCOVERY of a peripheral the delegate recognises (`.makeActive`): issue our own
+    /// connect()? Only when the link is already up — then connect() completes at once and IS
+    /// the join. Otherwise adopt from the air and wait for Dexcom's link.
+    public static func shouldRequestOnDiscovery(rideOnly: Bool, known: Bool, peripheralConnected: Bool) -> Bool {
+        !(rideOnly && known && !peripheralConnected)
+    }
+    /// Arm our own acquisition SCAN? Never under ride-only — a scan of ours in the sensor's
+    /// tail is the late attempt that writes the floor; adoption from the air needs no scan.
+    public static func shouldScanToAcquire(rideOnly: Bool) -> Bool {
+        !rideOnly
+    }
+    /// Stock flags a REMOTE disconnect while auth is still pending as "suspected end of
+    /// session" and answers with forget-and-scan. Under ride-only a join the sensor closes
+    /// before auth completes is routine and would put our scan into the tail. Keep the
+    /// identity; a real replacement sensor arrives on Dexcom's next link.
+    public static func shouldForgetOnBareDisconnect(rideOnly: Bool, adopted: Bool) -> Bool {
+        !(rideOnly && adopted)
     }
 }
