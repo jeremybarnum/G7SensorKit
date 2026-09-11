@@ -555,7 +555,9 @@ class G7BluetoothManager: NSObject {
         let sensorServices = [SensorServiceUUID.advertisement.cbUUID, SensorServiceUUID.cgmService.cbUUID]
 
         if let peripheralID = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first {
-            if !userForced, !G7RidePolicy.shouldIssueConnect(rideOnly: Self.rideOnly, adopted: true) {
+            // DIRECT AUTH owns the connection: with no Dexcom to piggyback on, ride-only would
+            // wait forever. Issue our own connect to the adopted sensor so the handshake can run.
+            if !userForced, !G7DirectAuth.enabled, !G7RidePolicy.shouldIssueConnect(rideOnly: Self.rideOnly, adopted: true) {
                 // RIDE-ONLY: no request of ours while a sensor is adopted — the pending connect
                 // is what the daemon's auto-connection turns into failed establishments in the
                 // sensor's tail. Register for connection events and join Dexcom's link when it
@@ -699,7 +701,11 @@ class G7BluetoothManager: NSObject {
                     activePeripheralManager?.delegate = self
                 }
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
-                if !G7RidePolicy.shouldRequestOnDiscovery(rideOnly: Self.rideOnly, known: true,
+                // DIRECT AUTH owns the connection: never wait for Dexcom's link (there may be no
+                // Dexcom at all) — fall through and issue our own connect so didConnect fires and
+                // the J-PAKE handshake runs.
+                if !G7DirectAuth.enabled,
+                   !G7RidePolicy.shouldRequestOnDiscovery(rideOnly: Self.rideOnly, known: true,
                                                           peripheralConnected: viaLinkUp || peripheral.state == .connected) {
                     // RIDE-ONLY, known-but-unlinked (a connection event that was a disconnect,
                     // or a sighting after a forget): adopt from the air, put NO request of ours
