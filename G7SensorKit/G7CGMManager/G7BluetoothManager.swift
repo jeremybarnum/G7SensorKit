@@ -102,6 +102,11 @@ protocol G7BluetoothManagerDelegate: AnyObject {
      */
     func bluetoothManager(_ manager: G7BluetoothManager, readyingFailed peripheralManager: G7PeripheralManager, with error: Error)
 
+    /// Our own J-PAKE handshake (G7DirectAuthSession) authenticated the link. The stock auth
+    /// observer never sees that exchange, so this clears its pending-auth state before the
+    /// sensor's routine hang-up would otherwise be misread as end-of-session.
+    func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager)
+
     /**
      Asks the delegate if the discovered or restored peripheral is active or should be connected to
 
@@ -148,6 +153,11 @@ protocol G7BluetoothManagerDelegate: AnyObject {
     func peripheralDidDisconnect(_ manager: G7BluetoothManager, peripheralManager: G7PeripheralManager, wasRemoteDisconnect: Bool)
 }
 
+
+extension G7BluetoothManagerDelegate {
+    /// Optional: only the stock sensor observer needs to react to a direct-auth success.
+    func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager) {}
+}
 
 class G7BluetoothManager: NSObject {
 
@@ -867,6 +877,18 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             Task {
                 let r = await session.run()
                 Self.census("[direct-auth] RESULT auth=\(r.authByte.map { "\($0)" } ?? "-") bond=\(r.bondByte.map { "\($0)" } ?? "-") glucose=\(r.glucose.map { "\($0)" } ?? "nil")\(r.error.map { " error=\($0)" } ?? "")")
+                // INGEST: hand the reading to Loop through the STOCK path. Clear the stock
+                // observer's pending-auth first (so the sensor's routine hang-up is not misread
+                // as end-of-session), then forward the raw 0x4E control notification into
+                // didReceiveControlResponse — the same parse → handleGlucoseMessage → delegate
+                // chain a Dexcom-authed read takes. Dispatched on managerQueue, where stock's own
+                // control responses arrive.
+                guard r.authenticated, let egv = r.egvRaw else { return }
+                self.managerQueue.async {
+                    self.delegate?.bluetoothManager(self, directAuthDidAuthenticate: m)
+                    self.delegate?.bluetoothManager(self, peripheralManager: m, didReceiveControlResponse: Data(egv))
+                    Self.census("[direct-auth] INGEST forwarded \(egv.count)-byte EGV to the stock glucose path")
+                }
             }
         }
     }

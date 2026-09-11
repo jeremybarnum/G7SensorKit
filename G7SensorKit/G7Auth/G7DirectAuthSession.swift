@@ -27,6 +27,9 @@ struct G7DirectAuthResult {
     var state: UInt8?
     var deviceListHex: String?
     var error: String?
+    /// The raw control notification (opcode 0x4E first) — forwarded verbatim into the stock
+    /// didReceiveControlResponse path so Loop parses and ingests it exactly as a Dexcom-authed read.
+    var egvRaw: [UInt8]?
     var authenticated: Bool { authByte == 1 || authByte == 2 }
 }
 
@@ -142,6 +145,7 @@ final class G7DirectAuthSession: @unchecked Sendable {
             }
 
             let egv = try await readEGV()
+            result.egvRaw = egv
             let rawEGV: Int = egv.count >= 14 ? Int(egv[12]) | (Int(egv[13]) << 8) : 0xffff
             result.glucose = rawEGV == 0xffff ? nil : (rawEGV & 0x0fff)
             result.state = egv.count >= 15 ? egv[14] : nil
@@ -210,7 +214,9 @@ final class G7DirectAuthSession: @unchecked Sendable {
             do {
                 try await setNotify(ctrlChar)
                 try await write(ctrlChar, [0x4E], response: true)
-                return try await ctrlStream.recv(timeout: recvTimeout)
+                // Filter on the glucose opcode: stock may write extendedVersionTx (0x52) to
+                // control after a read, and its 0x53 reply must not be mistaken for the EGV.
+                return try await ctrlStream.recv(op: 0x4E, timeout: recvTimeout)
             } catch {
                 log("[direct-auth] glucose attempt \(attempt): \(error) — waiting for pairing/encryption")
                 try? await Task.sleep(nanoseconds: 3_000_000_000)

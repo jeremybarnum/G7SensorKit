@@ -193,6 +193,14 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     // MARK: - BluetoothManagerDelegate
 
+    /// Direct auth (our own J-PAKE) authenticated the link. The stock observer never saw that
+    /// exchange, so clear its pending-auth here — otherwise the sensor's routine hang-up seconds
+    /// later reads as `suspectedEndOfSession` and the reading path is treated as unauthenticated.
+    func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager) {
+        pendingAuth = false
+        log.default("Direct auth authenticated %{public}@ — pendingAuth cleared", String(describing: peripheralManager.peripheral.name))
+    }
+
     func bluetoothManager(_ manager: G7BluetoothManager, readied peripheralManager: G7PeripheralManager) -> Bool {
         var shouldStopScanning = false;
 
