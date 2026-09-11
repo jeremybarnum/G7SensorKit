@@ -197,6 +197,12 @@ class G7BluetoothManager: NSObject {
     private var timedFireTimer: DispatchSourceTimer?
     private var timedCancelTimer: DispatchSourceTimer?
     private var timedIssuedAt: Date?
+    /// Consecutive fires without a didConnect. At `timedMissLimit` the anchor is presumed stale
+    /// and ONE normal scan+connect pass runs to re-anchor (logged loudly — it contaminates that cycle).
+    private var timedMisses = 0
+    private static let timedMissLimit = 3
+    private var timedReacquirePass = false
+    private var timedReacquireTimer: DispatchSourceTimer?
     /// Persisted so the grid survives a relaunch; re-anchored on every didConnect.
     private var timedAnchor: Date? {
         get { (UserDefaults.standard.object(forKey: G7TimedConnect.anchorKey) as? Double).map { Date(timeIntervalSince1970: $0) } }
@@ -240,11 +246,14 @@ class G7BluetoothManager: NSObject {
         UserDefaults.standard.set(on, forKey: G7TimedConnect.key)
         managerQueue.sync {
             if on {
-                if timedAnchor == nil {
-                    let seed = seedAnchor ?? lastDeliveryAt ?? Date()
-                    timedAnchor = seed
-                    Self.census("timed: anchor SEEDED at \(Self.timedClock.string(from: seed)) from \(seedAnchor != nil ? "the last reading" : (lastDeliveryAt != nil ? "last delivery" : "NOW — no reading known, first cycle is a guess"))")
-                }
+                // Always reseed from the FRESHEST thing we know. A stale anchor is fatal: the
+                // sensor drifts ~0.4 s/cycle, so an anchor hours old puts the burst outside the
+                // 5-s bound and every fire misses. OFF→ON must therefore reseed, not keep.
+                let candidates: [(String, Date)] = [("the last reading", seedAnchor), ("last delivery", lastDeliveryAt), ("the previous anchor", timedAnchor)].compactMap { n, d in d.map { (n, $0) } }
+                let (label, seed) = candidates.max(by: { $0.1 < $1.1 }) ?? ("NOW — nothing known, first cycle is a guess", Date())
+                timedAnchor = seed
+                timedMisses = 0
+                Self.census(String(format: "timed: anchor SEEDED at %@ from %@ (%.0f s old)", Self.timedClock.string(from: seed), label, Date().timeIntervalSince(seed)))
                 if centralManager.isScanning {
                     centralManager.stopScan()
                     delegate?.bluetoothManagerScanningStatusDidChange(self)
@@ -267,6 +276,9 @@ class G7BluetoothManager: NSObject {
         timedFireTimer?.cancel(); timedFireTimer = nil
         timedCancelTimer?.cancel(); timedCancelTimer = nil
         timedIssuedAt = nil
+        timedReacquireTimer?.cancel(); timedReacquireTimer = nil
+        timedReacquirePass = false
+        timedMisses = 0
         Self.census("timed: OFF — timers torn down, normal acquisition resumes")
     }
 
@@ -326,6 +338,34 @@ class G7BluetoothManager: NSObject {
             Self.census(String(format: "timed: bound reached at +%.1f s, state=%d — nothing pending to cancel", age, peripheral.state.rawValue))
         }
         timedIssuedAt = nil
+        managerQueue_timedNoteMissAndRearm()
+    }
+
+    /// A fire ended without a didConnect. Re-arm, or after `timedMissLimit` in a row run the
+    /// one-shot re-acquire pass.
+    private func managerQueue_timedNoteMissAndRearm() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        timedMisses += 1
+        if timedMisses >= Self.timedMissLimit, !timedReacquirePass {
+            timedReacquirePass = true
+            timedMisses = 0
+            Self.census("timed: \(Self.timedMissLimit) consecutive MISSES — anchor presumed stale; ONE normal scan+connect pass to re-anchor (contaminates this cycle; 90 s cap)")
+            let t = DispatchSource.makeTimerSource(queue: managerQueue)
+            t.schedule(deadline: .now() + 90)
+            t.setEventHandler { [weak self] in
+                guard let self = self, self.timedReacquirePass else { return }
+                self.timedReacquirePass = false
+                if self.centralManager.isScanning { self.centralManager.stopScan(); self.delegate?.bluetoothManagerScanningStatusDidChange(self) }
+                if let p = self.activePeripheral, p.state == .connecting { self.centralManager.cancelPeripheralConnection(p); G7RadioCensus.noteConnectResolved() }
+                Self.census("timed: re-acquire pass TIMED OUT at 90 s — scan and request withdrawn, back to the grid")
+                self.managerQueue_armTimedConnect()
+            }
+            t.resume()
+            timedReacquireTimer = t
+            managerQueue_scanForPeripheral()
+            return
+        }
+        Self.census("timed: miss \(timedMisses)/\(Self.timedMissLimit)")
         managerQueue_armTimedConnect()
     }
 
@@ -467,6 +507,7 @@ class G7BluetoothManager: NSObject {
             self.lastDeliveryAt = Date()
             Self.census("connection-event \(event.rawValue == 1 ? "CONNECT" : "disconnect") \(peripheral.name ?? "unnamed") — \(self.activePeripheralIdentifier == nil ? "handling (trigger b)" : "ignored, have active")")
             if let name = peripheral.name { G7RadioCensus.sensorSighted?(name) }
+            if G7TimedConnect.enabled { return }   // timed mode: observe only, never connect from here
             if self.activePeripheralIdentifier == nil {
                 self.log.default("Discovered peripheral from connectionEventDidOccur %{public}@", peripheral.identifier.uuidString)
                 self.handleDiscoveredPeripheral(peripheral, viaLinkUp: event == .peerConnected)
@@ -499,7 +540,7 @@ class G7BluetoothManager: NSObject {
         // burn the user's tap.
         let userForced = consumeForceAcquireOnce()
 
-        if G7TimedConnect.enabled {
+        if G7TimedConnect.enabled, !timedReacquirePass {
             // TIMED MODE owns the radio: no connection-event registration, no scan, no standing
             // request. The only thing that touches the sensor is the bounded connect the grid
             // timer issues. (A user-forced pass is deliberately swallowed here.)
@@ -764,7 +805,15 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
             timedAnchor = Date()
             timedIssuedAt = nil
-            Self.census(String(format: "timed: didConnect at +%.2f s after issue — RE-ANCHORED", age))
+            timedMisses = 0
+            if timedReacquirePass {
+                timedReacquirePass = false
+                timedReacquireTimer?.cancel(); timedReacquireTimer = nil
+                if centralManager.isScanning { centralManager.stopScan(); delegate?.bluetoothManagerScanningStatusDidChange(self) }
+                Self.census("timed: re-acquire pass CONNECTED — re-anchored, scan stopped, back to the grid")
+            } else {
+                Self.census(String(format: "timed: didConnect at +%.2f s after issue — RE-ANCHORED", age))
+            }
         }
 
         log.default("%{public}@: %{public}@", #function, peripheral)
@@ -832,7 +881,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             centralManager.cancelPeripheralConnection(peripheral)
             Self.census(String(format: "timed: didFailToConnect at +%.2f s — CANCELLED IMMEDIATELY (does the daemon still retry? read the capture)", age))
             timedIssuedAt = nil
-            managerQueue_armTimedConnect()
+            managerQueue_timedNoteMissAndRearm()
             return
         }
         if let error = error, let peripheralManager = activePeripheralManager {
