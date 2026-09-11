@@ -210,6 +210,11 @@ class G7BluetoothManager: NSObject {
 
     // MARK: - Direct auth (our own J-PAKE; see G7DirectAuthSession)
     private var directAuthSession: G7DirectAuthSession?
+    /// Under timed connect there is one shot per grid cycle, so a handshake that dies (dropped
+    /// chunk, early hang-up) would cost the whole reading. Allow ONE same-burst retry per cycle:
+    /// the sensor keeps advertising after it hangs up, so a bounded connect ~1.5 s later lands.
+    /// Reset when a normal grid fire happens, never by the retry itself (no loop).
+    private var timedRetryUsedThisCycle = false
 
     /// Consecutive fires without a didConnect. At `timedMissLimit` the anchor is presumed stale
     /// and ONE normal scan+connect pass runs to re-anchor (logged loudly — it contaminates that cycle).
@@ -311,10 +316,11 @@ class G7BluetoothManager: NSObject {
                            Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor), fireAt.timeIntervalSinceNow))
     }
 
-    private func managerQueue_timedFire(scheduled: Date) {
+    private func managerQueue_timedFire(scheduled: Date, isRetry: Bool = false) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         timedFireTimer = nil
         guard G7TimedConnect.enabled else { return }
+        if !isRetry { timedRetryUsedThisCycle = false }   // a fresh grid cycle earns one retry
         guard centralManager.state == .poweredOn else { Self.census("timed: fire skipped — radio not powered on"); managerQueue_armTimedConnect(); return }
         if let p = activePeripheral, p.state == .connected { Self.census("timed: fire skipped — already connected"); managerQueue_armTimedConnect(); return }
         guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
@@ -337,6 +343,23 @@ class G7BluetoothManager: NSObject {
         c.setEventHandler { [weak self] in self?.managerQueue_timedBoundedCancel(peripheral) }
         c.resume()
         timedCancelTimer = c
+    }
+
+    /// Direct auth failed on this cycle's link. Under timed connect, spend the cycle's one retry:
+    /// cancel the next-grid arm and fire a bounded connect ~1.5 s out while the sensor is still
+    /// advertising. If this retry also fails, the flag blocks a third attempt until the next grid.
+    private func managerQueue_timedRetrySameBurst() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard G7TimedConnect.enabled, !timedRetryUsedThisCycle else { return }
+        timedRetryUsedThisCycle = true
+        timedFireTimer?.cancel(); timedFireTimer = nil
+        let fireAt = Date().addingTimeInterval(1.5)
+        let t = DispatchSource.makeTimerSource(queue: managerQueue)
+        t.schedule(deadline: .now() + 1.5)
+        t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt, isRetry: true) }
+        t.resume()
+        timedFireTimer = t
+        Self.census("timed: direct-auth failed — SAME-BURST RETRY in 1.5 s (one per cycle)")
     }
 
     private func managerQueue_timedBoundedCancel(_ peripheral: CBPeripheral) {
@@ -883,7 +906,12 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 // didReceiveControlResponse — the same parse → handleGlucoseMessage → delegate
                 // chain a Dexcom-authed read takes. Dispatched on managerQueue, where stock's own
                 // control responses arrive.
-                guard r.authenticated, let egv = r.egvRaw else { return }
+                // A failed handshake under timed connect gets this cycle's one same-burst retry.
+                if !r.authenticated {
+                    self.managerQueue.async { self.managerQueue_timedRetrySameBurst() }
+                    return
+                }
+                guard let egv = r.egvRaw else { return }
                 self.managerQueue.async {
                     self.delegate?.bluetoothManager(self, directAuthDidAuthenticate: m)
                     self.delegate?.bluetoothManager(self, peripheralManager: m, didReceiveControlResponse: Data(egv))

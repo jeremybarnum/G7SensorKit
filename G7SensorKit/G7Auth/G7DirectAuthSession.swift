@@ -104,15 +104,34 @@ final class G7DirectAuthSession: @unchecked Sendable {
     }
 
     /// Bulk write to data(3538) in 20-byte withoutResponse chunks (3538 rejects with-response).
+    ///
+    /// ROOT CAUSE FIX (2026-09-11): withoutResponse writes are silently DROPPED by CoreBluetooth
+    /// when the peripheral's buffer is full, and fire-and-forget chunking lost ~1 in 4 handshakes
+    /// (sensor rejected our round after a short payload, or the derived key mismatched). Gate each
+    /// chunk on `canSendWriteWithoutResponse` — the proper way — so a chunk is only sent when the
+    /// stack will actually deliver it.
     private func writeDataChunks(_ payload: [UInt8]) async throws {
         var i = 0
         while i < payload.count {
             let end = min(i + 20, payload.count)
+            await waitUntilCanSendWithoutResponse()
             try await write(dataChar, Array(payload[i..<end]), response: false)
             try? await Task.sleep(nanoseconds: chunkGap)
             i += 20
         }
         try? await Task.sleep(nanoseconds: chunkTail)
+    }
+
+    /// Poll the peripheral's without-response readiness (10 ms steps, 500 ms cap). Falls through
+    /// on the cap so a stuck flag cannot hang the handshake — the sensor's own timeout bounds it.
+    private func waitUntilCanSendWithoutResponse() async {
+        guard let peripheral = dataChar.service?.peripheral else { return }
+        var waited: UInt64 = 0
+        while !peripheral.canSendWriteWithoutResponse, waited < 500_000_000 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            waited += 10_000_000
+        }
+        if waited > 0 { log("[direct-auth] chunk gated \(waited / 1_000_000) ms on canSendWriteWithoutResponse") }
     }
 
     // MARK: the handshake (byte flow verbatim from the proven client)
