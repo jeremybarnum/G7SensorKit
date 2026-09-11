@@ -197,6 +197,10 @@ class G7BluetoothManager: NSObject {
     private var timedFireTimer: DispatchSourceTimer?
     private var timedCancelTimer: DispatchSourceTimer?
     private var timedIssuedAt: Date?
+
+    // MARK: - Direct auth (our own J-PAKE; see G7DirectAuthSession)
+    private var directAuthSession: G7DirectAuthSession?
+
     /// Consecutive fires without a didConnect. At `timedMissLimit` the anchor is presumed stale
     /// and ONE normal scan+connect pass runs to re-anchor (logged loudly — it contaminates that cycle).
     private var timedMisses = 0
@@ -826,6 +830,38 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                     managerQueue_stopScanning()
                 }
             }
+            if G7DirectAuth.enabled, directAuthSession == nil {
+                managerQueue_startDirectAuth(peripheralManager, peripheral: peripheral)
+            }
+        }
+    }
+
+    /// Start our own J-PAKE handshake on the just-connected peripheral. Runs inside a perform so
+    /// characteristic discovery has completed; the session drives writes through this manager and
+    /// is fed inbound notifications by didUpdateValueFor. Diagnostic; gated by G7DirectAuth.enabled.
+    private func managerQueue_startDirectAuth(_ pm: G7PeripheralManager, peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        pm.perform { m in
+            let discovered = (peripheral.services ?? []).flatMap { $0.characteristics ?? [] }
+            func char(_ id: CGMServiceCharacteristicUUID) -> CBCharacteristic? {
+                discovered.first { $0.uuid == id.cbUUID }
+            }
+            guard let auth = char(.authentication),
+                  let data = char(.data),
+                  let ctrl = char(.control) else {
+                Self.census("[direct-auth] cannot start — auth/data/control not all discovered")
+                return
+            }
+            let pin = G7DirectAuth.pin4
+            let session = G7DirectAuthSession(peripheralManager: m, authChar: auth, dataChar: data,
+                                              ctrlChar: ctrl, pin4: pin, slotByte: G7DirectAuth.slotByte,
+                                              log: { Self.census($0) })
+            self.directAuthSession = session
+            Self.census("[direct-auth] starting handshake (\(pin.count)-digit pin, slot 0x\(String(format: "%02x", G7DirectAuth.slotByte)))")
+            Task {
+                let r = await session.run()
+                Self.census("[direct-auth] RESULT auth=\(r.authByte.map { "\($0)" } ?? "-") bond=\(r.bondByte.map { "\($0)" } ?? "-") glucose=\(r.glucose.map { "\($0)" } ?? "nil")\(r.error.map { " error=\($0)" } ?? "")")
+            }
         }
     }
 
@@ -861,6 +897,8 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         if peripheral != activePeripheral {
             managedPeripherals.removeValue(forKey: peripheral.identifier)
         }
+
+        directAuthSession?.cancel(); directAuthSession = nil
 
         if G7TimedConnect.enabled { managerQueue_armTimedConnect(); return }
         scanAfterDelay()
@@ -916,8 +954,14 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
             return
         }
 
+        // Direct-auth handshake owns auth/data/control until it authenticates; then control
+        // notifications fall through to the stock glucose path below.
+        if let session = directAuthSession, session.feed(characteristic.uuid, value) {
+            return
+        }
+
         switch CGMServiceCharacteristicUUID(rawValue: characteristic.uuid.uuidString.uppercased()) {
-        case .none, .communication?:
+        case .none, .communication?, .data?:
             return
         case .control?:
             self.delegate?.bluetoothManager(self, peripheralManager: manager, didReceiveControlResponse: value)
@@ -955,6 +999,20 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 /// fine — we are testing the connect PATTERN against the daemon's tally, not reading glucose.
 /// Pass = no −70 ever, and no "Retrying" line after one of our cancels. The −70 is measured from
 /// the request, not the burst, so `bound` sits under the daemon's 6-s fast scan with margin.
+/// DIRECT AUTH — our OWN J-PAKE authentication to the G7 (see G7DirectAuthSession), so the
+/// watch/phone reads glucose with no Dexcom app present. Diagnostic, default OFF. The pairing
+/// code (J-PAKE PIN) is provided by us; defaults to the current bench sensor.
+public enum G7DirectAuth {
+    public static let key = "G7Lab.directAuth"
+    public static let pinKey = "G7Lab.directAuth.pin"
+    public static let slotByte: UInt8 = 0x01   // concurrent slot, proven to coexist with a phone (auth=1)
+    public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+    public static var pin4: [UInt8] {
+        let s = UserDefaults.standard.string(forKey: pinKey) ?? "9151"
+        return Array(String(s.filter { $0.isNumber }.prefix(4)).utf8)
+    }
+}
+
 public enum G7TimedConnect {
     public static let key = "G7Lab.timedConnect"
     public static let anchorKey = "G7Lab.timedConnect.anchor"

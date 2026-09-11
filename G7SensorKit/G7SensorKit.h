@@ -8,6 +8,8 @@
 #import <Foundation/Foundation.h>
 
 //! Project version number for G7SensorKit.
+#import <G7SensorKit/g7auth.h>
+
 FOUNDATION_EXPORT double G7SensorKitVersionNumber;
 
 //! Project version string for G7SensorKit.

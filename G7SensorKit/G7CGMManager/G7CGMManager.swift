@@ -262,6 +262,11 @@ public class G7CGMManager: CGMManager {
     /// persisted reading so the first cycle lands on the sensor's real cadence.
     public func setTimedConnectForLab(_ on: Bool) { sensor.setTimedConnect(on, seedAnchor: state.latestReadingTimestamp) }
 
+    /// Direct-auth crypto link/self-test (Stage 1). Initializes the embedded J-PAKE/OpenSSL
+    /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
+    /// are statically linked into this build. No Bluetooth, no sensor contact.
+    public func directAuthCryptoSelfTest(pin4: [UInt8]) -> Bool { G7AuthCrypto.selfTestLinks(pin4: pin4) }
+
     public func scanForNewSensor() {
         logDeviceCommunication("Forgetting existing sensor and starting scan for new sensor.", type: .connection)
 

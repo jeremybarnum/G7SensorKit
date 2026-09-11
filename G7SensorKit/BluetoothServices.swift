@@ -35,6 +35,10 @@ enum CGMServiceCharacteristicUUID: String, CBUUIDRawValue {
 
     // Read/Write/Notify
     case backfill = "F8083536-849E-531C-C594-30F1F86A4EA5"
+
+    // Notify — J-PAKE / cert bulk payloads (direct auth only; stock never needed it because
+    // Dexcom performed the auth). Discovered so G7DirectAuthSession can drive the handshake.
+    case data = "F8083538-849E-531C-C594-30F1F86A4EA5"
 }
 
 
@@ -54,6 +58,7 @@ extension G7PeripheralManager.Configuration {
                     CGMServiceCharacteristicUUID.authentication.cbUUID,
                     CGMServiceCharacteristicUUID.control.cbUUID,
                     CGMServiceCharacteristicUUID.backfill.cbUUID,
+                    CGMServiceCharacteristicUUID.data.cbUUID,
                 ]
             ],
             notifyingCharacteristics: [:],
