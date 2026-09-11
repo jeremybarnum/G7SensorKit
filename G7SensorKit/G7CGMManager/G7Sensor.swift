@@ -108,6 +108,8 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     /// Re-acquire the SAME sensor without forgetting it — the user's "Reconnect CGM".
     /// Contrast `scanForNewSensor`, which clears `sensorID` and rebuilds cold.
     func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
+    /// Timed, bounded connect experiment (see G7TimedConnect).
+    func setTimedConnect(_ on: Bool, seedAnchor: Date?) { bluetoothManager.setTimedConnect(on, seedAnchor: seedAnchor) }
 
     public func scanForNewSensor() {
         self.sensorID = nil

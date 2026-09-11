@@ -193,6 +193,20 @@ class G7BluetoothManager: NSObject {
     private var scanWatchdog: DispatchSourceTimer?
     private var lastDeliveryAt: Date?
 
+    // MARK: - Timed, bounded connect state (see G7TimedConnect)
+    private var timedFireTimer: DispatchSourceTimer?
+    private var timedCancelTimer: DispatchSourceTimer?
+    private var timedIssuedAt: Date?
+    /// Persisted so the grid survives a relaunch; re-anchored on every didConnect.
+    private var timedAnchor: Date? {
+        get { (UserDefaults.standard.object(forKey: G7TimedConnect.anchorKey) as? Double).map { Date(timeIntervalSince1970: $0) } }
+        set {
+            if let d = newValue { UserDefaults.standard.set(d.timeIntervalSince1970, forKey: G7TimedConnect.anchorKey) }
+            else { UserDefaults.standard.removeObject(forKey: G7TimedConnect.anchorKey) }
+        }
+    }
+    private static let timedClock: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.S"; return f }()
+
     private func armScanWatchdog() {
         scanWatchdog?.cancel()
         if lastDeliveryAt == nil { lastDeliveryAt = Date() }   // baseline, so the first check is not "∞"
@@ -205,6 +219,7 @@ class G7BluetoothManager: NSObject {
 
     private func scanWatchdogFired() {
         dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard !G7TimedConnect.enabled else { return }   // timed mode owns the radio; no recycle
         guard activePeripheral?.state != .connected else { return }
         let age = lastDeliveryAt.map { Int(-$0.timeIntervalSinceNow) }
         guard (age ?? Int.max) > 315 else { return }
@@ -214,6 +229,104 @@ class G7BluetoothManager: NSObject {
         }
         managerQueue_stopScanning()
         managerQueue_scanForPeripheral()
+    }
+
+    // MARK: - Timed, bounded connect
+
+    /// Public entry (off the manager queue). ON: drop any scan or standing request and arm the
+    /// grid timer. OFF: tear the timers down and return to the normal posture.
+    func setTimedConnect(_ on: Bool, seedAnchor: Date?) {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        UserDefaults.standard.set(on, forKey: G7TimedConnect.key)
+        managerQueue.sync {
+            if on {
+                if timedAnchor == nil {
+                    let seed = seedAnchor ?? lastDeliveryAt ?? Date()
+                    timedAnchor = seed
+                    Self.census("timed: anchor SEEDED at \(Self.timedClock.string(from: seed)) from \(seedAnchor != nil ? "the last reading" : (lastDeliveryAt != nil ? "last delivery" : "NOW — no reading known, first cycle is a guess"))")
+                }
+                if centralManager.isScanning {
+                    centralManager.stopScan()
+                    delegate?.bluetoothManagerScanningStatusDidChange(self)
+                }
+                if let p = activePeripheral, p.state == .connecting {
+                    centralManager.cancelPeripheralConnection(p)
+                    G7RadioCensus.noteConnectResolved()
+                    Self.census("timed: ON — withdrew the standing request that was pending")
+                }
+                managerQueue_armTimedConnect()
+            } else {
+                managerQueue_tearDownTimed()
+            }
+        }
+        if !on { scanForPeripheral() }
+    }
+
+    private func managerQueue_tearDownTimed() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        timedFireTimer?.cancel(); timedFireTimer = nil
+        timedCancelTimer?.cancel(); timedCancelTimer = nil
+        timedIssuedAt = nil
+        Self.census("timed: OFF — timers torn down, normal acquisition resumes")
+    }
+
+    private func managerQueue_armTimedConnect() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard G7TimedConnect.enabled else { return }
+        timedFireTimer?.cancel(); timedFireTimer = nil
+        guard let anchor = timedAnchor else { Self.census("timed: cannot arm — no anchor"); return }
+        let fireAt = G7TimedConnect.nextFire(anchor: anchor, now: Date())
+        let t = DispatchSource.makeTimerSource(queue: managerQueue)
+        t.schedule(deadline: .now() + max(0.05, fireAt.timeIntervalSinceNow))
+        t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt) }
+        t.resume()
+        timedFireTimer = t
+        Self.census(String(format: "timed: ARMED for %@ (anchor %@, in %.0f s) — no scan, no standing request",
+                           Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor), fireAt.timeIntervalSinceNow))
+    }
+
+    private func managerQueue_timedFire(scheduled: Date) {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        timedFireTimer = nil
+        guard G7TimedConnect.enabled else { return }
+        guard centralManager.state == .poweredOn else { Self.census("timed: fire skipped — radio not powered on"); managerQueue_armTimedConnect(); return }
+        if let p = activePeripheral, p.state == .connected { Self.census("timed: fire skipped — already connected"); managerQueue_armTimedConnect(); return }
+        guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
+            Self.census("timed: fire skipped — no adopted peripheral (adopt the sensor BEFORE removing Dexcom)")
+            managerQueue_armTimedConnect(); return
+        }
+        if let pm = activePeripheralManager { pm.peripheral = peripheral } else {
+            activePeripheralManager = G7PeripheralManager(peripheral: peripheral, configuration: .dexcomG7, centralManager: centralManager)
+            activePeripheralManager?.delegate = self
+        }
+        managedPeripherals[peripheral.identifier] = activePeripheralManager
+        let late = Date().timeIntervalSince(scheduled)
+        timedIssuedAt = Date()
+        G7RadioCensus.noteConnectPending()
+        centralManager.connect(peripheral)
+        Self.census(String(format: "timed: connect ISSUED (timer late %+.2f s) — bounded cancel in %.0f s", late, G7TimedConnect.bound))
+        timedCancelTimer?.cancel()
+        let c = DispatchSource.makeTimerSource(queue: managerQueue)
+        c.schedule(deadline: .now() + G7TimedConnect.bound)
+        c.setEventHandler { [weak self] in self?.managerQueue_timedBoundedCancel(peripheral) }
+        c.resume()
+        timedCancelTimer = c
+    }
+
+    private func managerQueue_timedBoundedCancel(_ peripheral: CBPeripheral) {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        timedCancelTimer = nil
+        guard G7TimedConnect.enabled else { return }
+        let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
+        if peripheral.state == .connecting {
+            centralManager.cancelPeripheralConnection(peripheral)
+            G7RadioCensus.noteConnectResolved()
+            Self.census(String(format: "timed: BOUNDED CANCEL at +%.1f s — request withdrawn under the fast scan", age))
+        } else {
+            Self.census(String(format: "timed: bound reached at +%.1f s, state=%d — nothing pending to cancel", age, peripheral.state.rawValue))
+        }
+        timedIssuedAt = nil
+        managerQueue_armTimedConnect()
     }
 
     var activePeripheralIdentifier: UUID? {
@@ -385,6 +498,14 @@ class G7BluetoothManager: NSObject {
         // Consumed here, after the early-outs: a pass that returns without acting must not
         // burn the user's tap.
         let userForced = consumeForceAcquireOnce()
+
+        if G7TimedConnect.enabled {
+            // TIMED MODE owns the radio: no connection-event registration, no scan, no standing
+            // request. The only thing that touches the sensor is the bounded connect the grid
+            // timer issues. (A user-forced pass is deliberately swallowed here.)
+            managerQueue_armTimedConnect()
+            return
+        }
 
         let sensorServices = [SensorServiceUUID.advertisement.cbUUID, SensorServiceUUID.cgmService.cbUUID]
 
@@ -638,6 +759,13 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         G7RadioCensus.noteConnectResolved()
         lastDeliveryAt = Date()
         Self.census("didConnect \(peripheral.name ?? "unnamed")")
+        if G7TimedConnect.enabled {
+            timedCancelTimer?.cancel(); timedCancelTimer = nil
+            let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
+            timedAnchor = Date()
+            timedIssuedAt = nil
+            Self.census(String(format: "timed: didConnect at +%.2f s after issue — RE-ANCHORED", age))
+        }
 
         log.default("%{public}@: %{public}@", #function, peripheral)
 
@@ -685,6 +813,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             managedPeripherals.removeValue(forKey: peripheral.identifier)
         }
 
+        if G7TimedConnect.enabled { managerQueue_armTimedConnect(); return }
         scanAfterDelay()
     }
 
@@ -694,6 +823,18 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         Self.census("didFailToConnect \(peripheral.name ?? "unnamed")\(error.map { " [\(($0 as NSError).domain)#\(($0 as NSError).code)] \($0.localizedDescription)" } ?? "")")
 
         log.error("%{public}@: %{public}@", #function, String(describing: error))
+        if G7TimedConnect.enabled {
+            timedCancelTimer?.cancel(); timedCancelTimer = nil
+            let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
+            // THE MOVE UNDER TEST: withdraw the request the instant it fails, before the daemon's
+            // own "Connection failed, Retrying" re-adds the device and lands a late attempt in the
+            // sensor's tail. Whether this beats that retry is what the sysdiagnose will show.
+            centralManager.cancelPeripheralConnection(peripheral)
+            Self.census(String(format: "timed: didFailToConnect at +%.2f s — CANCELLED IMMEDIATELY (does the daemon still retry? read the capture)", age))
+            timedIssuedAt = nil
+            managerQueue_armTimedConnect()
+            return
+        }
         if let error = error, let peripheralManager = activePeripheralManager {
             self.delegate?.bluetoothManager(self, readyingFailed: peripheralManager, with: error)
         }
@@ -750,6 +891,42 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 /// is mute until a strong burst or a Bluetooth toggle. The counter is fed by Dexcom's own
 /// re-subscribe into the sensor's long tails (not ours to prevent); the LATE failure that writes
 /// the floor happened, on record, only with our scan or our pod link on the chip in that tail.
+/// TIMED, BOUNDED CONNECT — the experiment that decides whether a direct-auth client of OURS
+/// could avoid bluetoothd's −70 dBm floor (the G7 mute). Built 2026-09-11 after the Dexcom-alone
+/// arm proved the mute is platform-native: departure → the daemon scores failed establishments →
+/// count 5 → judgment 1 → the next failure landing >6 s after the connect REQUEST writes −70.
+/// Every −70 on record came from the daemon's OWN retry ("Connection failed, Retrying") landing
+/// late in the sensor's tail. So the question is whether a client that (a) never scans, (b) never
+/// leaves a request standing, (c) connects on the grid just before the burst and (d) withdraws the
+/// request at 5 s — or the instant it fails — can keep the daemon from ever making that late retry.
+///
+/// Watch-only, diagnostic key, default OFF. Meant to run with the Dexcom watch app REMOVED (so ours
+/// is the only client) under the CGM-only soak (keepalive, no pod), with the sniffer on the sensor
+/// and a sysdiagnose inside 3 h. Without auth the sensor hangs up ~10 s after we connect; that is
+/// fine — we are testing the connect PATTERN against the daemon's tally, not reading glucose.
+/// Pass = no −70 ever, and no "Retrying" line after one of our cancels. The −70 is measured from
+/// the request, not the burst, so `bound` sits under the daemon's 6-s fast scan with margin.
+public enum G7TimedConnect {
+    public static let key = "G7Lab.timedConnect"
+    public static let anchorKey = "G7Lab.timedConnect.anchor"
+    /// The sensor's collected cadence, measured 296–311 s across 11 links on 2026-09-09.
+    public static let period: TimeInterval = 300
+    /// Issue the connect this long BEFORE the expected burst.
+    public static let lead: TimeInterval = 2
+    /// Withdraw a still-pending request this long after issuing it (< the daemon's 6-s fast scan).
+    public static let bound: TimeInterval = 5
+    public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+    /// Pure, pinned by WatchAppTests: the next grid-aligned fire time strictly after `now + margin`.
+    /// Grid point n fires at anchor + n·period − lead. Re-anchored on every didConnect, so drift
+    /// (≈0.4 s/cycle against a fixed 300) never accumulates.
+    public static func nextFire(anchor: Date, now: Date, margin: TimeInterval = 1) -> Date {
+        var n = floor(now.timeIntervalSince(anchor) / period)
+        var t = anchor.addingTimeInterval(n * period - lead)
+        while t <= now.addingTimeInterval(margin) { n += 1; t = anchor.addingTimeInterval(n * period - lead) }
+        return t
+    }
+}
+
 public enum G7RidePolicy {
     public static let key = "G7Lab.rideOnly"
     /// WATCH ONLY. G7SensorKit also compiles into the phone app, whose manager keeps stock

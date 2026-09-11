@@ -258,6 +258,9 @@ public class G7CGMManager: CGMManager {
     /// Drop the link and re-acquire the SAME sensor, keeping its identity. The user's
     /// "Reconnect CGM" action; see `G7BluetoothManager.recycleConnectForLab`.
     public func recycleG7ConnectForLab() { sensor.recycleConnectForLab() }
+    /// Timed, bounded connect experiment (see G7TimedConnect). Seeds the grid from the last
+    /// persisted reading so the first cycle lands on the sensor's real cadence.
+    public func setTimedConnectForLab(_ on: Bool) { sensor.setTimedConnect(on, seedAnchor: state.latestReadingTimestamp) }
 
     public func scanForNewSensor() {
         logDeviceCommunication("Forgetting existing sensor and starting scan for new sensor.", type: .connection)
