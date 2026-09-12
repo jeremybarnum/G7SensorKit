@@ -386,8 +386,13 @@ class G7BluetoothManager: NSObject {
         guard centralManager.state == .poweredOn else { Self.census("timed: fire skipped — radio not powered on"); managerQueue_armTimedConnect(); return }
         if let p = activePeripheral, p.state == .connected { Self.census("timed: fire skipped — already connected"); managerQueue_armTimedConnect(); return }
         guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
-            Self.census("timed: fire skipped — no adopted peripheral (adopt the sensor BEFORE removing Dexcom)")
-            managerQueue_armTimedConnect(); return
+            // Adoption is the CBCentralManager's, so it dies with the process: every relaunch
+            // (install, crash, watchdog kill) starts with no adopted peripheral while sensorID and
+            // the anchor persist. Before 2026-09-12 this re-armed forever — 08:44→11:09 of "fire
+            // skipped" — and the only way back was toggling timed OFF, tapping Reconnect, and
+            // toggling ON. One normal scan+connect pass re-adopts; its reading anchors the grid.
+            managerQueue_startTimedReacquirePass(reason: "no adopted peripheral (relaunch drops it)", scan: true)
+            return
         }
         if let pm = activePeripheralManager { pm.peripheral = peripheral } else {
             activePeripheralManager = G7PeripheralManager(peripheral: peripheral, configuration: .dexcomG7, centralManager: centralManager)
@@ -697,8 +702,13 @@ class G7BluetoothManager: NSObject {
         if G7TimedConnect.enabled, !timedReacquirePass {
             // TIMED MODE owns the radio: no connection-event registration, no scan, no standing
             // request. The only thing that touches the sensor is the bounded connect the grid
-            // timer issues. (A user-forced pass is deliberately swallowed here.)
-            managerQueue_armTimedConnect()
+            // timer issues. The user's own Reconnect is the exception — it used to be swallowed
+            // here, which is why recovering adoption needed timed OFF → Reconnect → timed ON.
+            if userForced {
+                managerQueue_startTimedReacquirePass(reason: "user tapped Reconnect", scan: true)
+            } else {
+                managerQueue_armTimedConnect()
+            }
             return
         }
 
@@ -747,7 +757,12 @@ class G7BluetoothManager: NSObject {
         if activePeripheral?.state != .connected {
             centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: sensorServices])
 
-            if userForced || G7RidePolicy.shouldScanToAcquire(rideOnly: Self.rideOnly) {
+            // DIRECT AUTH: there is no Dexcom app on the wrist to ride, so "wait for Dexcom's
+            // next link" waits forever — on 2026-09-12 a relaunch sat in exactly this branch from
+            // 13:41 until the user tapped Reconnect. Ride-only is dead once we do our own
+            // handshake; acquisition is a scan, and in timed mode this is only ever reached
+            // inside the one-shot re-acquire pass.
+            if userForced || G7DirectAuth.enabled || G7RidePolicy.shouldScanToAcquire(rideOnly: Self.rideOnly) {
                 log.default("Scanning for peripherals and listening for connection events")
                 centralManager.scanForPeripherals(withServices: [SensorServiceUUID.advertisement.cbUUID], options: nil)
                 G7RadioCensus.scanStarted?()
