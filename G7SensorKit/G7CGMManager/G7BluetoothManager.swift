@@ -234,9 +234,11 @@ class G7BluetoothManager: NSObject {
     /// and ONE normal scan+connect pass runs to re-anchor (logged loudly — it contaminates that cycle).
     private var timedMisses = 0
     private static let timedMissLimit = 3
+    private var timedLastConnectAt: Date?
     private var timedReacquirePass = false
     private var timedReacquireTimer: DispatchSourceTimer?
-    /// Persisted so the grid survives a relaunch; re-anchored on every didConnect.
+    /// The last reading's SENSOR timestamp (activation + glucoseTimestamp). Persisted so the grid
+    /// survives a relaunch; re-anchored on every reading via `noteReading(at:)`, never on connect.
     private var timedAnchor: Date? {
         get { (UserDefaults.standard.object(forKey: G7TimedConnect.anchorKey) as? Double).map { Date(timeIntervalSince1970: $0) } }
         set {
@@ -272,6 +274,20 @@ class G7BluetoothManager: NSObject {
 
     // MARK: - Timed, bounded connect
 
+    /// A reading arrived: its SENSOR timestamp is the grid. Called by G7Sensor for every glucose
+    /// message (stock path and direct auth alike). The burst-offset line is the tuning metric for
+    /// `G7TimedConnect.fireOffset`: connect time − reading timestamp, expected ≈ +2 s.
+    func noteReading(at readingTimestamp: Date) {
+        managerQueue.async { [self] in
+            timedAnchor = readingTimestamp
+            timedMisses = 0
+            if G7TimedConnect.enabled, let c = timedLastConnectAt {
+                Self.census(String(format: "timed: anchor ← reading ts %@ · burst offset %+.1f s (connect − ts)",
+                                   Self.timedClock.string(from: readingTimestamp), c.timeIntervalSince(readingTimestamp)))
+            }
+        }
+    }
+
     /// Public entry (off the manager queue). ON: drop any scan or standing request and arm the
     /// grid timer. OFF: tear the timers down and return to the normal posture.
     func setTimedConnect(_ on: Bool, seedAnchor: Date?) {
@@ -279,14 +295,18 @@ class G7BluetoothManager: NSObject {
         UserDefaults.standard.set(on, forKey: G7TimedConnect.key)
         managerQueue.async { [self] in
             if on {
-                // Always reseed from the FRESHEST thing we know. A stale anchor is fatal: the
-                // sensor drifts ~0.4 s/cycle, so an anchor hours old puts the burst outside the
-                // 5-s bound and every fire misses. OFF→ON must therefore reseed, not keep.
-                let candidates: [(String, Date)] = [("the last reading", seedAnchor), ("last delivery", lastDeliveryAt), ("the previous anchor", timedAnchor)].compactMap { n, d in d.map { (n, $0) } }
-                let (label, seed) = candidates.max(by: { $0.1 < $1.1 }) ?? ("NOW — nothing known, first cycle is a guess", Date())
-                timedAnchor = seed
+                // The anchor is a reading's sensor timestamp — the freshest of the persisted one
+                // and the store's latest. Both are on the sensor's own grid, so age costs only
+                // crystal drift (≈4 s/day). Nothing known → one normal scan pass finds the sensor
+                // and its first reading anchors the grid.
+                let candidates: [(String, Date)] = [("the last reading", seedAnchor), ("the persisted anchor", timedAnchor)].compactMap { n, d in d.map { (n, $0) } }
                 timedMisses = 0
-                Self.census(String(format: "timed: anchor SEEDED at %@ from %@ (%.0f s old)", Self.timedClock.string(from: seed), label, Date().timeIntervalSince(seed)))
+                if let (label, seed) = candidates.max(by: { $0.1 < $1.1 }) {
+                    timedAnchor = seed
+                    Self.census(String(format: "timed: anchor = reading ts %@ from %@ (%.0f s old)", Self.timedClock.string(from: seed), label, Date().timeIntervalSince(seed)))
+                } else {
+                    Self.census("timed: no reading to anchor on — one normal scan+connect pass; its reading anchors the grid")
+                }
                 if centralManager.isScanning {
                     centralManager.stopScan()
                     delegate?.bluetoothManagerScanningStatusDidChange(self)
@@ -296,7 +316,11 @@ class G7BluetoothManager: NSObject {
                     G7RadioCensus.noteConnectResolved()
                     Self.census("timed: ON — withdrew the standing request that was pending")
                 }
-                managerQueue_armTimedConnect()
+                if timedAnchor == nil {
+                    managerQueue_startTimedReacquirePass(reason: "no anchor yet", scan: true)
+                } else {
+                    managerQueue_armTimedConnect()
+                }
             } else {
                 managerQueue_tearDownTimed()
             }
@@ -448,7 +472,11 @@ class G7BluetoothManager: NSObject {
         timedMisses += 1
         if timedMisses >= Self.timedMissLimit, !timedReacquirePass {
             timedMisses = 0
-            managerQueue_startTimedReacquirePass(reason: "\(Self.timedMissLimit) consecutive MISSES — anchor presumed stale", scan: true)
+            // The anchor is a sensor timestamp now, so drift (4 s/day) cannot be the cause: three
+            // in a row means the sensor is not where we think it is. One normal pass is the only
+            // way back. By then the extended phase (~10 min after a departure) is over, and scans
+            // at minute calls score nothing — measured, 17 deliberate collisions.
+            managerQueue_startTimedReacquirePass(reason: "\(Self.timedMissLimit) consecutive MISSES — sensor not answering on the grid", scan: true)
             return
         }
         Self.census("timed: miss \(timedMisses)/\(Self.timedMissLimit)")
@@ -946,16 +974,18 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         if G7TimedConnect.enabled {
             timedCancelTimer?.cancel(); timedCancelTimer = nil
             let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
-            timedAnchor = Date()
+            timedLastConnectAt = Date()
             timedIssuedAt = nil
             timedMisses = 0
             if timedReacquirePass {
                 timedReacquirePass = false
                 timedReacquireTimer?.cancel(); timedReacquireTimer = nil
                 if centralManager.isScanning { centralManager.stopScan(); delegate?.bluetoothManagerScanningStatusDidChange(self) }
-                Self.census("timed: re-acquire pass CONNECTED — re-anchored, scan stopped, back to the grid")
+                Self.census("timed: re-acquire pass CONNECTED — scan stopped; this reading anchors the grid")
             } else {
-                Self.census(String(format: "timed: didConnect at +%.2f s after issue — RE-ANCHORED", age))
+                // The latency after issue says where the burst is: ~0.05 s = already advertising
+                // when we asked; ~1 s = it started that long after our fire.
+                Self.census(String(format: "timed: didConnect at +%.2f s after issue", age))
             }
         }
 
@@ -1219,10 +1249,15 @@ public enum G7DirectAuth {
 public enum G7TimedConnect {
     public static let key = "G7Lab.timedConnect"
     public static let anchorKey = "G7Lab.timedConnect.anchor"
-    /// The sensor's collected cadence, measured 296–311 s across 11 links on 2026-09-09.
+    /// The sensor's cadence on ITS OWN clock: reading timestamps sit on an exact 300.000-s grid
+    /// (14:01:38.6 → 14:06:38.7 on 2026-09-12; crystal drift ≈ 4 s/day against wall clock).
     public static let period: TimeInterval = 300
-    /// Issue the connect this long BEFORE the expected burst.
-    public static let lead: TimeInterval = 2
+    /// Issue the connect this long AFTER the grid point. The anchor is the last reading's own
+    /// timestamp and the sensor starts advertising ≈ +2.0 s after it (n=20 overnight 2026-09-12:
+    /// connects at +2.0…+3.1 s), so +1 puts the request up one second before the burst and the
+    /// 5-s bound covers burst −1…+4 s. Anchoring on our CONNECT time instead walked the window
+    /// 1.2 s later every cycle and put the first fires after a reseed 8–11 s into the burst.
+    public static let fireOffset: TimeInterval = 1
     /// Withdraw a still-pending request this long after issuing it (< the daemon's 6-s fast scan).
     public static let bound: TimeInterval = 5
     public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
@@ -1234,12 +1269,12 @@ public enum G7TimedConnect {
     public static var runtimeAvailable: (() -> Bool)?
     static var hasRuntime: Bool { runtimeAvailable?() ?? true }
     /// Pure, pinned by WatchAppTests: the next grid-aligned fire time strictly after `now + margin`.
-    /// Grid point n fires at anchor + n·period − lead. Re-anchored on every didConnect, so drift
-    /// (≈0.4 s/cycle against a fixed 300) never accumulates.
+    /// Grid point n fires at anchor + n·period + fireOffset, where `anchor` is a reading's own
+    /// sensor timestamp. Every reading re-anchors, so wall-clock drift never accumulates.
     public static func nextFire(anchor: Date, now: Date, margin: TimeInterval = 1) -> Date {
         var n = floor(now.timeIntervalSince(anchor) / period)
-        var t = anchor.addingTimeInterval(n * period - lead)
-        while t <= now.addingTimeInterval(margin) { n += 1; t = anchor.addingTimeInterval(n * period - lead) }
+        var t = anchor.addingTimeInterval(n * period + fireOffset)
+        while t <= now.addingTimeInterval(margin) { n += 1; t = anchor.addingTimeInterval(n * period + fireOffset) }
         return t
     }
 }
