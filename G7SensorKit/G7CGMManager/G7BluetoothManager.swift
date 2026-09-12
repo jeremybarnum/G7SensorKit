@@ -215,6 +215,20 @@ class G7BluetoothManager: NSObject {
     /// the sensor keeps advertising after it hangs up, so a bounded connect ~1.5 s later lands.
     /// Reset when a normal grid fire happens, never by the retry itself (no loop).
     private var timedRetryUsedThisCycle = false
+    /// A failed handshake asked for the retry while its link was still up (AES failure: the sensor
+    /// closes ~3 s later). didDisconnect consumes this and schedules the retry from the real close.
+    private var timedRetryPending = false
+    /// When the direct-auth link came up — to measure how long a failed link ran.
+    private var directAuthLinkStartedAt: Date?
+    /// CUSHION (2026-09-12). The mute-feeding failure needs a request parked past the daemon's 6-s
+    /// fast scan AND the sensor's post-read wind-down (measured failure zone close+11…+16 s).
+    /// The retry is issued at close+1.5 s (observed-good) with a 4-s bound — withdrawn by
+    /// close+5.5 s, half the distance to the earliest measured trouble, and 2 s under the 6-s
+    /// rule — and only after an EARLY failure: if the failed link itself ran past the cap the
+    /// sensor is already deep in its cycle, so take the loss and wait for the grid.
+    private static let timedRetryDelay: TimeInterval = 1.5
+    private static let timedRetryBound: TimeInterval = 4
+    private static let timedRetryLinkCap: TimeInterval = 10
 
     /// Consecutive fires without a didConnect. At `timedMissLimit` the anchor is presumed stale
     /// and ONE normal scan+connect pass runs to re-anchor (logged loudly — it contaminates that cycle).
@@ -298,6 +312,7 @@ class G7BluetoothManager: NSObject {
         timedReacquireTimer?.cancel(); timedReacquireTimer = nil
         timedReacquirePass = false
         timedMisses = 0
+        timedRetryPending = false
         Self.census("timed: OFF — timers torn down, normal acquisition resumes")
     }
 
@@ -336,30 +351,55 @@ class G7BluetoothManager: NSObject {
         timedIssuedAt = Date()
         G7RadioCensus.noteConnectPending()
         centralManager.connect(peripheral)
-        Self.census(String(format: "timed: connect ISSUED (timer late %+.2f s) — bounded cancel in %.0f s", late, G7TimedConnect.bound))
+        // A retry gets the tighter bound: withdrawn 2 s under the daemon's 6-s rule.
+        let bound = isRetry ? Self.timedRetryBound : G7TimedConnect.bound
+        Self.census(String(format: "timed: connect ISSUED%@ (timer late %+.2f s) — bounded cancel in %.0f s", isRetry ? " [RETRY]" : "", late, bound))
         timedCancelTimer?.cancel()
         let c = DispatchSource.makeTimerSource(queue: managerQueue)
-        c.schedule(deadline: .now() + G7TimedConnect.bound)
+        c.schedule(deadline: .now() + bound)
         c.setEventHandler { [weak self] in self?.managerQueue_timedBoundedCancel(peripheral) }
         c.resume()
         timedCancelTimer = c
     }
 
-    /// Direct auth failed on this cycle's link. Under timed connect, spend the cycle's one retry:
-    /// cancel the next-grid arm and fire a bounded connect ~1.5 s out while the sensor is still
-    /// advertising. If this retry also fails, the flag blocks a third attempt until the next grid.
-    private func managerQueue_timedRetrySameBurst() {
+    /// Direct auth failed on this cycle's link. Under timed connect, ask for the cycle's one retry.
+    /// If the link is still up (AES failure — the sensor closes ~3 s later) the retry is deferred to
+    /// didDisconnect so it is timed from the REAL close; if the link is already down (sensor hung up
+    /// mid-J-PAKE) schedule it now. Either way the retry lands in close+1.5…+5.5 s.
+    private func managerQueue_timedRequestRetry(peripheral: CBPeripheral) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled, !timedRetryUsedThisCycle else { return }
+        if peripheral.state == .connected || peripheral.state == .connecting {
+            timedRetryPending = true
+            Self.census("timed: direct-auth failed with the link still up — retry PENDING until the sensor closes")
+        } else {
+            managerQueue_scheduleTimedRetry(closeAt: Date())
+        }
+    }
+
+    /// Schedule the same-burst retry relative to the sensor's close: fire at close+1.5 s, bounded
+    /// at 4 s (withdrawn by close+5.5 s). Skipped if the failed link ran past the cap — a late
+    /// failure means the sensor is already deep in its cycle and a retry would chase its tail.
+    private func managerQueue_scheduleTimedRetry(closeAt: Date) {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard G7TimedConnect.enabled, !timedRetryUsedThisCycle else { return }
+        let linkRan = directAuthLinkStartedAt.map { closeAt.timeIntervalSince($0) } ?? 0
+        guard linkRan <= Self.timedRetryLinkCap else {
+            Self.census(String(format: "timed: retry SKIPPED — failed link ran %.1f s (> %.0f s cap): sensor deep in its cycle, waiting for the grid", linkRan, Self.timedRetryLinkCap))
+            timedRetryUsedThisCycle = true
+            managerQueue_armTimedConnect()
+            return
+        }
         timedRetryUsedThisCycle = true
         timedFireTimer?.cancel(); timedFireTimer = nil
-        let fireAt = Date().addingTimeInterval(1.5)
+        let fireAt = closeAt.addingTimeInterval(Self.timedRetryDelay)
         let t = DispatchSource.makeTimerSource(queue: managerQueue)
-        t.schedule(deadline: .now() + 1.5)
+        t.schedule(deadline: .now() + max(0.05, fireAt.timeIntervalSinceNow))
         t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt, isRetry: true) }
         t.resume()
         timedFireTimer = t
-        Self.census("timed: direct-auth failed — SAME-BURST RETRY in 1.5 s (one per cycle)")
+        Self.census(String(format: "timed: SAME-BURST RETRY scheduled at close+%.1f s (failed link ran %.1f s; bound %.0f s → withdrawn by close+%.1f s; one per cycle)",
+                           Self.timedRetryDelay, linkRan, Self.timedRetryBound, Self.timedRetryDelay + Self.timedRetryBound))
     }
 
     private func managerQueue_timedBoundedCancel(_ peripheral: CBPeripheral) {
@@ -896,6 +936,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                                               ctrlChar: ctrl, pin4: pin, slotByte: G7DirectAuth.slotByte,
                                               log: { Self.census($0) })
             self.directAuthSession = session
+            self.directAuthLinkStartedAt = Date()
             Self.census("[direct-auth] starting handshake (\(pin.count)-digit pin, slot 0x\(String(format: "%02x", G7DirectAuth.slotByte)))")
             Task {
                 let r = await session.run()
@@ -908,7 +949,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 // control responses arrive.
                 // A failed handshake under timed connect gets this cycle's one same-burst retry.
                 if !r.authenticated {
-                    self.managerQueue.async { self.managerQueue_timedRetrySameBurst() }
+                    self.managerQueue.async { self.managerQueue_timedRequestRetry(peripheral: m.peripheral) }
                     return
                 }
                 guard let egv = r.egvRaw else { return }
@@ -955,6 +996,14 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         }
 
         directAuthSession?.cancel(); directAuthSession = nil
+
+        // A failed handshake deferred its retry to the real close — schedule it from here, timed
+        // from this disconnect, in place of the next-grid arm (a retry miss re-arms the grid).
+        if timedRetryPending {
+            timedRetryPending = false
+            managerQueue_scheduleTimedRetry(closeAt: Date())
+            return
+        }
 
         if G7TimedConnect.enabled { managerQueue_armTimedConnect(); return }
         scanAfterDelay()
