@@ -226,17 +226,12 @@ public class G7CGMManager: CGMManager {
     }
 
     /// Hand the per-sensor pairing codes to the BLE layer (G7DirectAuth reads a UserDefaults
-    /// mirror because it has no reference to this manager), and migrate the pre-2026-09-12
-    /// single code once: it belonged to whichever sensor was adopted when it was entered.
+    /// mirror because it has no reference to this manager). The pre-2026-09-12 single code is
+    /// deliberately NOT migrated (Jeremy): the bench sensor must come up with no code, so the
+    /// whole flow — glance note, phone entry, sync, verified — gets exercised. The legacy key is
+    /// simply cleared so it can never resurface.
     private func installDirectAuthPins() {
-        let defaults = UserDefaults.standard
-        if state.directAuthPins.isEmpty,
-           let legacy = defaults.string(forKey: G7DirectAuth.legacyPinKey),
-           let sensorID = state.sensorID {
-            mutateState { $0.directAuthPins[sensorID] = legacy }
-            defaults.removeObject(forKey: G7DirectAuth.legacyPinKey)
-            logDeviceCommunication("direct-auth: migrated the legacy pairing code to sensor \(sensorID)", type: .connection)
-        }
+        UserDefaults.standard.removeObject(forKey: G7DirectAuth.legacyPinKey)
         G7DirectAuth.pins = state.directAuthPins
         if let needs = G7DirectAuth.needsCodeFor, state.directAuthPins[needs] != nil {
             G7DirectAuth.needsCodeFor = nil
