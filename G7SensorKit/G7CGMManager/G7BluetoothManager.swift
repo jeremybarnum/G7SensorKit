@@ -277,7 +277,7 @@ class G7BluetoothManager: NSObject {
     func setTimedConnect(_ on: Bool, seedAnchor: Date?) {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
         UserDefaults.standard.set(on, forKey: G7TimedConnect.key)
-        managerQueue.sync {
+        managerQueue.async { [self] in
             if on {
                 // Always reseed from the FRESHEST thing we know. A stale anchor is fatal: the
                 // sensor drifts ~0.4 s/cycle, so an anchor hours old puts the burst outside the
@@ -320,6 +320,12 @@ class G7BluetoothManager: NSObject {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled else { return }
         timedFireTimer?.cancel(); timedFireTimer = nil
+        guard G7TimedConnect.hasRuntime else {
+            // No keepalive holder: a suspended app cannot honour the bound. Stand down; the
+            // watch app calls timedRuntimeDidChange() when a loan/E1 starts and we re-arm.
+            Self.census("timed: no keepalive holder — standing down (no connects until a loan/E1 gives the app runtime)")
+            return
+        }
         guard let anchor = timedAnchor else { Self.census("timed: cannot arm — no anchor"); return }
         let fireAt = G7TimedConnect.nextFire(anchor: anchor, now: Date())
         let t = DispatchSource.makeTimerSource(queue: managerQueue)
@@ -331,11 +337,28 @@ class G7BluetoothManager: NSObject {
                            Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor), fireAt.timeIntervalSinceNow))
     }
 
+    /// The host's runtime posture changed (a keepalive was acquired or released). Re-arms the
+    /// grid timer if timed connect is on: arming re-checks `G7TimedConnect.hasRuntime`, so a
+    /// release stands the timer down and an acquire brings it back for the next grid point.
+    func timedRuntimeDidChange() {
+        managerQueue.async { [self] in
+            guard G7TimedConnect.enabled else { return }
+            managerQueue_armTimedConnect()
+        }
+    }
+
     private func managerQueue_timedFire(scheduled: Date, isRetry: Bool = false) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         timedFireTimer = nil
         guard G7TimedConnect.enabled else { return }
         if !isRetry { timedRetryUsedThisCycle = false }   // a fresh grid cycle earns one retry
+        guard G7TimedConnect.hasRuntime else {
+            // The keepalive was released after this timer was armed. A connect issued by a process
+            // about to be suspended is exactly the un-cancellable request the bound exists to
+            // prevent: stand down instead of arming the next cycle.
+            Self.census("timed: fire skipped — no keepalive holder; standing down until a loan/E1 gives the app runtime")
+            return
+        }
         guard centralManager.state == .poweredOn else { Self.census("timed: fire skipped — radio not powered on"); managerQueue_armTimedConnect(); return }
         if let p = activePeripheral, p.state == .connected { Self.census("timed: fire skipped — already connected"); managerQueue_armTimedConnect(); return }
         guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
@@ -515,23 +538,26 @@ class G7BluetoothManager: NSObject {
 
     // MARK: - Actions
 
+    // The public actions are fire-and-forget onto the manager queue (FIFO keeps callers'
+    // ordering — e.g. disconnect → forget → scan). None of them needs a synchronous result, and
+    // a synchronous hop from the main thread is what the 2026-09-12 watchdog kill was made of.
     func scanForPeripheral() {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
 
-        managerQueue.sync {
+        managerQueue.async {
             self.managerQueue_scanForPeripheral()
         }
     }
 
     func forgetPeripheral() {
-        managerQueue.sync {
+        managerQueue.async {
             self.activePeripheralManager = nil
         }
     }
 
     func stopScanning() {
-        managerQueue.sync {
-            managerQueue_stopScanning()
+        managerQueue.async {
+            self.managerQueue_stopScanning()
         }
     }
 
@@ -568,31 +594,33 @@ class G7BluetoothManager: NSObject {
     /// "Re-acquire Sensor", which forgets the sensor and rebuilds cold.
     func recycleConnectForLab() {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
-        let before = managerQueue.sync {
-            "peripheral=\(activePeripheral.map { "\($0.state.rawValue)" } ?? "none") adopted=\(activePeripheralIdentifier != nil) scanning=\(centralManager.isScanning)"
-        }
         forceAcquireLock.lock(); _forceAcquireOnce = true; forceAcquireLock.unlock()
-        Self.census("lab: RECONNECT requested by the user — forcing one acquisition pass (ride-only bypassed for this pass only) — before: \(before)")
-        disconnect()
-        // NOT an immediate re-issue: cancelPeripheralConnection is non-blocking and the #101
-        // guard in handleDiscoveredPeripheral drops a re-issue while the peripheral still reads
-        // `.connecting`. The 2 s settle lets the cancel resolve first.
-        scanAfterDelay()
+        managerQueue.async {
+            let before = "peripheral=\(self.activePeripheral.map { "\($0.state.rawValue)" } ?? "none") adopted=\(self.activePeripheralIdentifier != nil) scanning=\(self.centralManager.isScanning)"
+            Self.census("lab: RECONNECT requested by the user — forcing one acquisition pass (ride-only bypassed for this pass only) — before: \(before)")
+            self.managerQueue_disconnect()
+            // NOT an immediate re-issue: cancelPeripheralConnection is non-blocking and the #101
+            // guard in handleDiscoveredPeripheral drops a re-issue while the peripheral still reads
+            // `.connecting`. The 2 s settle lets the cancel resolve first.
+            self.scanAfterDelay()
+        }
     }
 
     func disconnect() {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        managerQueue.async { self.managerQueue_disconnect() }
+    }
 
-        managerQueue.sync {
-            if centralManager.isScanning {
-                log.default("Stopping scan on disconnect")
-                centralManager.stopScan()
-                delegate?.bluetoothManagerScanningStatusDidChange(self)
-            }
+    private func managerQueue_disconnect() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        if centralManager.isScanning {
+            log.default("Stopping scan on disconnect")
+            centralManager.stopScan()
+            delegate?.bluetoothManagerScanningStatusDidChange(self)
+        }
 
-            if let peripheral = activePeripheral {
-                centralManager.cancelPeripheralConnection(peripheral)
-            }
+        if let peripheral = activePeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
         }
     }
 
@@ -741,24 +769,35 @@ class G7BluetoothManager: NSObject {
 
     // MARK: - Accessors
 
+    // WATCHDOG KILL 2026-09-12 08:42 (0x8BADF00D, 10 s): the diagnostics page read these on the
+    // MAIN thread inside a SwiftUI update, `managerQueue.sync` waited behind a direct-auth
+    // handshake (blocking writes, up to 8 s each), and the BLE queue was itself waiting on
+    // SwiftUI's lock — a lock inversion. The UI must never block on this queue: wait at most
+    // 50 ms, otherwise hand back the last value the queue reported.
+    private let readCacheLock = NSLock()
+    private var readCache: [String: Bool] = [:]
+
+    private func boundedRead(_ key: String, _ compute: @escaping () -> Bool) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        managerQueue.async { [weak self] in
+            guard let self = self else { done.signal(); return }
+            let value = compute()
+            self.readCacheLock.lock(); self.readCache[key] = value; self.readCacheLock.unlock()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 0.05)
+        readCacheLock.lock(); defer { readCacheLock.unlock() }
+        return readCache[key] ?? false
+    }
+
     var isScanning: Bool {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
-
-        var isScanning = false
-        managerQueue.sync {
-            isScanning = centralManager.isScanning
-        }
-        return isScanning
+        return boundedRead("scanning") { [unowned self] in self.centralManager.isScanning }
     }
 
     var isConnected: Bool {
         dispatchPrecondition(condition: .notOnQueue(managerQueue))
-
-        var isConnected = false
-        managerQueue.sync {
-            isConnected = activePeripheral?.state == .connected
-        }
-        return isConnected
+        return boundedRead("connected") { [unowned self] in self.activePeripheral?.state == .connected }
     }
 
     /// `viaLinkUp`: the caller knows another app's link to this peripheral is UP (a CONNECT
@@ -1187,6 +1226,13 @@ public enum G7TimedConnect {
     /// Withdraw a still-pending request this long after issuing it (< the daemon's 6-s fast scan).
     public static let bound: TimeInterval = 5
     public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+    /// Does the app currently have background runtime (a keepalive holder: a loan, or E1)?
+    /// The watch app installs this. nil = assume yes (iOS, tests). With no runtime a suspended
+    /// app cannot honour the 5-s bound — on 2026-09-12 its timers fired +234…+468 s late and a
+    /// request the app believed it had withdrawn had in fact been served and closed minutes
+    /// earlier — so timed fires stand down until a holder exists, and re-arm when one appears.
+    public static var runtimeAvailable: (() -> Bool)?
+    static var hasRuntime: Bool { runtimeAvailable?() ?? true }
     /// Pure, pinned by WatchAppTests: the next grid-aligned fire time strictly after `now + margin`.
     /// Grid point n fires at anchor + n·period − lead. Re-anchored on every didConnect, so drift
     /// (≈0.4 s/cycle against a fixed 300) never accumulates.

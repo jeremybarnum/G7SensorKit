@@ -118,6 +118,8 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
     /// Timed, bounded connect experiment (see G7TimedConnect).
     func setTimedConnect(_ on: Bool, seedAnchor: Date?) { bluetoothManager.setTimedConnect(on, seedAnchor: seedAnchor) }
+    /// Host runtime posture changed (keepalive acquired/released); see G7TimedConnect.runtimeAvailable.
+    func timedRuntimeDidChange() { bluetoothManager.timedRuntimeDidChange() }
 
     /// Adopt a sensor by identity handed over from the phone — no scan, no forget. The next
     /// acquisition pass then targets this name. Direct-auth new-sensor flow, 2026-09-12.

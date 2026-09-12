@@ -276,6 +276,10 @@ public class G7CGMManager: CGMManager {
     /// Timed, bounded connect experiment (see G7TimedConnect). Seeds the grid from the last
     /// persisted reading so the first cycle lands on the sensor's real cadence.
     public func setTimedConnectForLab(_ on: Bool) { sensor.setTimedConnect(on, seedAnchor: state.latestReadingTimestamp) }
+    /// The host's background runtime changed (a keepalive was acquired or released). Timed connect
+    /// only arms while `G7TimedConnect.runtimeAvailable()` is true, so the host calls this on
+    /// every transition to stand the grid timer down or bring it back.
+    public func timedRuntimeDidChange() { sensor.timedRuntimeDidChange() }
 
     /// Direct-auth crypto link/self-test (Stage 1). Initializes the embedded J-PAKE/OpenSSL
     /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
