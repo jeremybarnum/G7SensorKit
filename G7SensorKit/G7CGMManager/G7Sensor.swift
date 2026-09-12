@@ -31,6 +31,14 @@ public protocol G7SensorDelegate: AnyObject {
 
     // This is triggered for connection/disconnection events, and enabling/disabling scan
     func sensorConnectionStatusDidUpdate(_ sensor: G7Sensor)
+
+    /// Our own J-PAKE handshake authenticated against this sensor with the stored pairing code —
+    /// the code is now known-good. Optional; only G7CGMManager records it.
+    func sensor(_ sensor: G7Sensor, directAuthVerified sensorName: String)
+}
+
+public extension G7SensorDelegate {
+    func sensor(_ sensor: G7Sensor, directAuthVerified sensorName: String) {}
 }
 
 public enum G7SensorError: Error {
@@ -110,6 +118,17 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
     /// Timed, bounded connect experiment (see G7TimedConnect).
     func setTimedConnect(_ on: Bool, seedAnchor: Date?) { bluetoothManager.setTimedConnect(on, seedAnchor: seedAnchor) }
+
+    /// Adopt a sensor by identity handed over from the phone — no scan, no forget. The next
+    /// acquisition pass then targets this name. Direct-auth new-sensor flow, 2026-09-12.
+    func adopt(sensorID: String?) {
+        self.sensorID = sensorID
+    }
+
+    /// New sensor adopted by identity from the phone: drop the old peripheral and go find it.
+    func reacquireForNewSensor() {
+        bluetoothManager.reacquireForNewSensor()
+    }
 
     public func scanForNewSensor() {
         self.sensorID = nil
@@ -199,6 +218,11 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager) {
         pendingAuth = false
         log.default("Direct auth authenticated %{public}@ — pendingAuth cleared", String(describing: peripheralManager.peripheral.name))
+        // The code worked against this sensor: record it so the phone's settings row can show
+        // "verified" instead of merely "saved".
+        if let name = peripheralManager.peripheral.name {
+            delegateQueue.async { self.delegate?.sensor(self, directAuthVerified: name) }
+        }
     }
 
     func bluetoothManager(_ manager: G7BluetoothManager, readied peripheralManager: G7PeripheralManager) -> Bool {

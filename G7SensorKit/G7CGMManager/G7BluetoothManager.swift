@@ -424,26 +424,47 @@ class G7BluetoothManager: NSObject {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         timedMisses += 1
         if timedMisses >= Self.timedMissLimit, !timedReacquirePass {
-            timedReacquirePass = true
             timedMisses = 0
-            Self.census("timed: \(Self.timedMissLimit) consecutive MISSES — anchor presumed stale; ONE normal scan+connect pass to re-anchor (contaminates this cycle; 90 s cap)")
-            let t = DispatchSource.makeTimerSource(queue: managerQueue)
-            t.schedule(deadline: .now() + 90)
-            t.setEventHandler { [weak self] in
-                guard let self = self, self.timedReacquirePass else { return }
-                self.timedReacquirePass = false
-                if self.centralManager.isScanning { self.centralManager.stopScan(); self.delegate?.bluetoothManagerScanningStatusDidChange(self) }
-                if let p = self.activePeripheral, p.state == .connecting { self.centralManager.cancelPeripheralConnection(p); G7RadioCensus.noteConnectResolved() }
-                Self.census("timed: re-acquire pass TIMED OUT at 90 s — scan and request withdrawn, back to the grid")
-                self.managerQueue_armTimedConnect()
-            }
-            t.resume()
-            timedReacquireTimer = t
-            managerQueue_scanForPeripheral()
+            managerQueue_startTimedReacquirePass(reason: "\(Self.timedMissLimit) consecutive MISSES — anchor presumed stale", scan: true)
             return
         }
         Self.census("timed: miss \(timedMisses)/\(Self.timedMissLimit)")
         managerQueue_armTimedConnect()
+    }
+
+    /// ONE normal scan+connect pass while timed mode owns the radio (90-s cap), then back to the
+    /// grid. Used by the 3-miss fallback and by a new sensor arriving from the phone. `scan:false`
+    /// only arms the pass (the caller issues the scan itself, e.g. as a user-forced one).
+    private func managerQueue_startTimedReacquirePass(reason: String, scan: Bool) {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        guard !timedReacquirePass else { return }
+        timedReacquirePass = true
+        Self.census("timed: \(reason); ONE normal scan+connect pass to re-anchor (contaminates this cycle; 90 s cap)")
+        let t = DispatchSource.makeTimerSource(queue: managerQueue)
+        t.schedule(deadline: .now() + 90)
+        t.setEventHandler { [weak self] in
+            guard let self = self, self.timedReacquirePass else { return }
+            self.timedReacquirePass = false
+            if self.centralManager.isScanning { self.centralManager.stopScan(); self.delegate?.bluetoothManagerScanningStatusDidChange(self) }
+            if let p = self.activePeripheral, p.state == .connecting { self.centralManager.cancelPeripheralConnection(p); G7RadioCensus.noteConnectResolved() }
+            Self.census("timed: re-acquire pass TIMED OUT at 90 s — scan and request withdrawn, back to the grid")
+            self.managerQueue_armTimedConnect()
+        }
+        t.resume()
+        timedReacquireTimer = t
+        if scan { managerQueue_scanForPeripheral() }
+    }
+
+    /// A NEW sensor was adopted by identity (handed over from the phone): drop the old
+    /// peripheral and go find the new one by name. Ride-only never scans on its own and timed
+    /// mode swallows forced passes, so this arms the timed re-acquire pass first and then issues
+    /// the acquisition as a user-forced one — the same pair of doors Reconnect CGM opens.
+    func reacquireForNewSensor() {
+        forgetPeripheral()
+        if G7TimedConnect.enabled {
+            managerQueue.async { self.managerQueue_startTimedReacquirePass(reason: "new sensor from the phone", scan: false) }
+        }
+        recycleConnectForLab()
     }
 
     var activePeripheralIdentifier: UUID? {
@@ -931,7 +952,15 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 Self.census("[direct-auth] cannot start — auth/data/control not all discovered")
                 return
             }
-            let pin = G7DirectAuth.pin4
+            guard let pin = G7DirectAuth.pin4(for: peripheral.name) else {
+                // The user has not entered this sensor's pairing code yet (new sensor, or a
+                // fresh install). Don't attempt a handshake we know will fail; say so where the
+                // user looks. G7CGMManager clears the flag the moment a code arrives.
+                G7DirectAuth.needsCodeFor = peripheral.name
+                Self.census("[direct-auth] NO PAIRING CODE for \(peripheral.name ?? "sensor") — enter it in Loop ▸ Dexcom G7 on the phone (shown in the Dexcom app). Handshake skipped.")
+                return
+            }
+            G7DirectAuth.needsCodeFor = nil
             let session = G7DirectAuthSession(peripheralManager: m, authChar: auth, dataChar: data,
                                               ctrlChar: ctrl, pin4: pin, slotByte: G7DirectAuth.slotByte,
                                               log: { Self.census($0) })
@@ -1109,12 +1138,42 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 /// code (J-PAKE PIN) is provided by us; defaults to the current bench sensor.
 public enum G7DirectAuth {
     public static let key = "G7Lab.directAuth"
-    public static let pinKey = "G7Lab.directAuth.pin"
+    /// Per-sensor pairing codes keyed by sensor name (DXCM…): the BLE layer's mirror of
+    /// G7CGMManagerState.directAuthPins, installed by G7CGMManager (which also carries them
+    /// phone→watch inside the context's cgmManagerState). A code only ever works with its own
+    /// sensor, so old entries are harmless and kept.
+    public static let pinsKey = "G7Lab.directAuth.pins"
+    /// Pre-2026-09-12 single code; G7CGMManager migrates it to `pins[current sensor]` once.
+    public static let legacyPinKey = "G7Lab.directAuth.pin"
+    /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
+    /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
+    public static let needsCodeKey = "G7Lab.directAuth.needsCode"
     public static let slotByte: UInt8 = 0x01   // concurrent slot, proven to coexist with a phone (auth=1)
     public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
-    public static var pin4: [UInt8] {
-        let s = UserDefaults.standard.string(forKey: pinKey) ?? "9151"
-        return Array(String(s.filter { $0.isNumber }.prefix(4)).utf8)
+
+    public static var pins: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: pinsKey) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: pinsKey) }
+    }
+
+    /// The 4 ASCII digits for this sensor, or nil if the user has not entered its code yet.
+    public static func pin4(for sensorName: String?) -> [UInt8]? {
+        guard let name = sensorName, let code = pins[name] else { return nil }
+        let digits = String(code.filter { $0.isNumber }.prefix(4))
+        return digits.count == 4 ? Array(digits.utf8) : nil
+    }
+
+    public static var needsCodeFor: String? {
+        get { UserDefaults.standard.string(forKey: needsCodeKey) }
+        set {
+            if let v = newValue { UserDefaults.standard.set(v, forKey: needsCodeKey) }
+            else { UserDefaults.standard.removeObject(forKey: needsCodeKey) }
+        }
+    }
+
+    /// One-line glance note while a code is missing; nil otherwise.
+    public static var needsCodeNote: String? {
+        needsCodeFor.map { "Sensor code needed for \($0) — enter it in Loop ▸ Dexcom G7 on the phone (it is shown in the Dexcom app)." }
     }
 }
 

@@ -213,6 +213,7 @@ public class G7CGMManager: CGMManager {
         lockedState = Locked(G7CGMManagerState())
         sensor = G7Sensor(sensorID: nil)
         sensor.delegate = self
+        installDirectAuthPins()
     }
 
     public required init?(rawState: RawStateValue) {
@@ -221,6 +222,25 @@ public class G7CGMManager: CGMManager {
         sensor = G7Sensor(sensorID: state.sensorID)
         sensor.delegate = self
         sensor.needsVersionInfo = state.extendedVersion == nil
+        installDirectAuthPins()
+    }
+
+    /// Hand the per-sensor pairing codes to the BLE layer (G7DirectAuth reads a UserDefaults
+    /// mirror because it has no reference to this manager), and migrate the pre-2026-09-12
+    /// single code once: it belonged to whichever sensor was adopted when it was entered.
+    private func installDirectAuthPins() {
+        let defaults = UserDefaults.standard
+        if state.directAuthPins.isEmpty,
+           let legacy = defaults.string(forKey: G7DirectAuth.legacyPinKey),
+           let sensorID = state.sensorID {
+            mutateState { $0.directAuthPins[sensorID] = legacy }
+            defaults.removeObject(forKey: G7DirectAuth.legacyPinKey)
+            logDeviceCommunication("direct-auth: migrated the legacy pairing code to sensor \(sensorID)", type: .connection)
+        }
+        G7DirectAuth.pins = state.directAuthPins
+        if let needs = G7DirectAuth.needsCodeFor, state.directAuthPins[needs] != nil {
+            G7DirectAuth.needsCodeFor = nil
+        }
     }
 
     public var rawState: RawStateValue {
@@ -266,6 +286,69 @@ public class G7CGMManager: CGMManager {
     /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
     /// are statically linked into this build. No Bluetooth, no sensor contact.
     public func directAuthCryptoSelfTest(pin4: [UInt8]) -> Bool { G7AuthCrypto.selfTestLinks(pin4: pin4) }
+
+    // MARK: - Direct auth pairing codes (entered once per sensor on the phone; ride to the watch
+    // inside the context's cgmManagerState, which the phone already sends every update)
+
+    public enum DirectAuthCodeStatus: Equatable {
+        case noSensor
+        case needsCode
+        case saved
+        case verified(Date)
+    }
+
+    /// The current sensor's code state, for the settings row.
+    public var directAuthCodeStatus: DirectAuthCodeStatus {
+        guard let id = state.sensorID else { return .noSensor }
+        guard state.directAuthPins[id] != nil else { return .needsCode }
+        if let at = state.directAuthVerifiedAt[id] { return .verified(at) }
+        return .saved
+    }
+
+    /// The user entered this sensor's pairing code (phone). Stored per sensor; "verified" only
+    /// once the watch's handshake succeeds with it. Returns false if it is not 4 digits.
+    @discardableResult
+    public func setDirectAuthPin(_ code: String, for sensorName: String) -> Bool {
+        let digits = String(code.filter { $0.isNumber }.prefix(4))
+        guard digits.count == 4 else { return false }
+        mutateState { state in
+            state.directAuthPins[sensorName] = digits
+            state.directAuthVerifiedAt[sensorName] = nil
+        }
+        G7DirectAuth.pins = state.directAuthPins
+        if G7DirectAuth.needsCodeFor == sensorName { G7DirectAuth.needsCodeFor = nil }
+        logDeviceCommunication("direct-auth: pairing code saved for \(sensorName)", type: .connection)
+        return true
+    }
+
+    /// WATCH: the phone's cgmManagerState arrived in a context. Take its codes (the phone is
+    /// where they are entered), and if the phone has moved to a NEW sensor we have a code for,
+    /// adopt it by identity and go find it — no scan of our own is ever needed to notice a
+    /// sensor change, which is the whole point on a ride-only/timed watch.
+    public func receiveDirectAuthPins(_ pins: [String: String], phoneSensorID: String?) {
+        guard !pins.isEmpty else { return }
+        let before = state
+        mutateState { state in
+            for (name, code) in pins { state.directAuthPins[name] = code }
+        }
+        G7DirectAuth.pins = state.directAuthPins
+        if let needs = G7DirectAuth.needsCodeFor, state.directAuthPins[needs] != nil {
+            G7DirectAuth.needsCodeFor = nil
+        }
+        if let new = phoneSensorID, new != before.sensorID, state.directAuthPins[new] != nil {
+            logDeviceCommunication("direct-auth: phone reports sensor \(new) (was \(before.sensorID ?? "none")) and we hold its code — adopting and re-acquiring", type: .connection)
+            mutateState { state in
+                state.sensorID = new
+                state.activatedAt = nil
+                state.extendedVersion = nil
+            }
+            sensor.adopt(sensorID: new)
+            sensor.needsVersionInfo = true
+            sensor.reacquireForNewSensor()
+        } else if state.directAuthPins != before.directAuthPins {
+            logDeviceCommunication("direct-auth: pairing codes updated from the phone (\(state.directAuthPins.count) sensor(s))", type: .connection)
+        }
+    }
 
     public func scanForNewSensor() {
         logDeviceCommunication("Forgetting existing sensor and starting scan for new sensor.", type: .connection)
@@ -335,9 +418,31 @@ extension G7CGMManager: G7SensorDelegate {
             delegate.notify { delegate in
                 delegate?.cgmManager(self, hasNew: [event])
             }
+
+            #if !os(watchOS)
+            // Direct auth in use (a code has been entered before) and none for this sensor yet:
+            // ask now, while the phone is in hand. This alert is a convenience, not the state —
+            // the settings row and the watch glance keep saying "needs code" until one exists.
+            if !state.directAuthPins.isEmpty, state.directAuthPins[name] == nil {
+                let content = Alert.Content(
+                    title: "New sensor \(name)",
+                    body: "Enter its pairing code in Loop ▸ Dexcom G7 so the watch can read it without your phone. The code is shown in the Dexcom app.",
+                    acknowledgeActionButtonLabel: "OK")
+                let alert = Alert(identifier: Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: "directAuth.codeNeeded"),
+                                  foregroundContent: content, backgroundContent: content, trigger: .immediate)
+                delegate.notify { delegate in
+                    Task { await delegate?.issueAlert(alert) }
+                }
+            }
+            #endif
         }
 
         return shouldSwitchToNewSensor
+    }
+
+    public func sensor(_ sensor: G7Sensor, directAuthVerified sensorName: String) {
+        mutateState { $0.directAuthVerifiedAt[sensorName] = Date() }
+        logDeviceCommunication("direct-auth: pairing code VERIFIED for \(sensorName)", type: .connection)
     }
 
     public func sensor(_ sensor: G7Sensor, didReceive extendedVersion: ExtendedVersionMessage) {

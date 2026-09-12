@@ -29,7 +29,12 @@ class G7SettingsViewModel: ObservableObject {
             cgmManager.uploadReadings = uploadReadings
         }
     }
-    
+
+    /// Direct auth (watch reads the sensor without the Dexcom app): the current sensor's
+    /// pairing-code state, and the one field the user ever types into — once per sensor.
+    @Published private(set) var directAuthCodeStatus: G7CGMManager.DirectAuthCodeStatus = .noSensor
+    @Published var directAuthCodeEntry: String = ""
+
     let displayGlucosePreference: DisplayGlucosePreference
 
     private var lastReading: G7GlucoseMessage?
@@ -81,6 +86,30 @@ class G7SettingsViewModel: ObservableObject {
         uploadReadings = cgmManager.state.uploadReadings
         lifetime = cgmManager.lifetime
         warmupDuration = cgmManager.warmupDuration
+        directAuthCodeStatus = cgmManager.directAuthCodeStatus
+    }
+
+    /// Save the entered 4-digit pairing code for the current sensor. Returns false if there is
+    /// no sensor or the entry is not four digits.
+    @discardableResult
+    func saveDirectAuthCode() -> Bool {
+        guard let name = cgmManager.sensorName else { return false }
+        let ok = cgmManager.setDirectAuthPin(directAuthCodeEntry, for: name)
+        if ok {
+            directAuthCodeEntry = ""
+            updateValues()
+        }
+        return ok
+    }
+
+    /// Settings-row text for the pairing-code state.
+    var directAuthCodeStatusText: String {
+        switch directAuthCodeStatus {
+        case .noSensor: return "no sensor"
+        case .needsCode: return "needs code"
+        case .saved: return "saved — watch will verify on its next connect"
+        case .verified(let at): return "verified ✓ \(dateFormatter.string(from: at))"
+        }
     }
 
     var progressBarColorStyle: ColorStyle {
