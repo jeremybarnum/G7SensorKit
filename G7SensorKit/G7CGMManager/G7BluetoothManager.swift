@@ -215,6 +215,12 @@ class G7BluetoothManager: NSObject {
     /// the sensor keeps advertising after it hangs up, so a bounded connect ~1.5 s later lands.
     /// Reset when a normal grid fire happens, never by the retry itself (no loop).
     private var timedRetryUsedThisCycle = false
+    /// Which request is currently up, so the bounded cancel knows what a miss means.
+    private enum TimedAsk { case grid, second, retry }
+    private var timedCurrentAsk: TimedAsk = .grid
+    /// The grid ask heard nothing → one SECOND ASK (G7TimedConnect.secondAskDelay). Reset on a
+    /// grid fire, never by the second ask itself.
+    private var timedSecondAskUsedThisCycle = false
     /// A failed handshake asked for the retry while its link was still up (AES failure: the sensor
     /// closes ~3 s later). didDisconnect consumes this and schedules the retry from the real close.
     private var timedRetryPending = false
@@ -371,11 +377,15 @@ class G7BluetoothManager: NSObject {
         }
     }
 
-    private func managerQueue_timedFire(scheduled: Date, isRetry: Bool = false) {
+    private func managerQueue_timedFire(scheduled: Date, ask: TimedAsk = .grid) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         timedFireTimer = nil
         guard G7TimedConnect.enabled else { return }
-        if !isRetry { timedRetryUsedThisCycle = false }   // a fresh grid cycle earns one retry
+        if ask == .grid {   // a fresh grid cycle earns one retry and one second ask
+            timedRetryUsedThisCycle = false
+            timedSecondAskUsedThisCycle = false
+        }
+        let isRetry = ask == .retry
         guard G7TimedConnect.hasRuntime else {
             // The keepalive was released after this timer was armed. A connect issued by a process
             // about to be suspended is exactly the un-cancellable request the bound exists to
@@ -401,11 +411,14 @@ class G7BluetoothManager: NSObject {
         managedPeripherals[peripheral.identifier] = activePeripheralManager
         let late = Date().timeIntervalSince(scheduled)
         timedIssuedAt = Date()
+        timedCurrentAsk = ask
         G7RadioCensus.noteConnectPending()
         centralManager.connect(peripheral)
         // A retry gets the tighter bound: withdrawn 2 s under the daemon's 6-s rule.
         let bound = isRetry ? Self.timedRetryBound : G7TimedConnect.bound
-        Self.census(String(format: "timed: connect ISSUED%@ (timer late %+.2f s) — bounded cancel in %.0f s", isRetry ? " [RETRY]" : "", late, bound))
+        let label: String
+        switch ask { case .grid: label = ""; case .second: label = " [SECOND ASK]"; case .retry: label = " [RETRY]" }
+        Self.census(String(format: "timed: connect ISSUED%@ (timer late %+.2f s) — bounded cancel in %.0f s", label, late, bound))
         timedCancelTimer?.cancel()
         let c = DispatchSource.makeTimerSource(queue: managerQueue)
         c.schedule(deadline: .now() + bound)
@@ -447,7 +460,7 @@ class G7BluetoothManager: NSObject {
         let fireAt = closeAt.addingTimeInterval(Self.timedRetryDelay)
         let t = DispatchSource.makeTimerSource(queue: managerQueue)
         t.schedule(deadline: .now() + max(0.05, fireAt.timeIntervalSinceNow))
-        t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt, isRetry: true) }
+        t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt, ask: .retry) }
         t.resume()
         timedFireTimer = t
         Self.census(String(format: "timed: SAME-BURST RETRY scheduled at close+%.1f s (failed link ran %.1f s; bound %.0f s → withdrawn by close+%.1f s; one per cycle)",
@@ -467,6 +480,22 @@ class G7BluetoothManager: NSObject {
             Self.census(String(format: "timed: bound reached at +%.1f s, state=%d — nothing pending to cancel", age, peripheral.state.rawValue))
         }
         timedIssuedAt = nil
+        // The grid ask heard nothing: ask once more, half a second later, same bound. The burst is
+        // still on the air (7 s with the phone collecting, 25–30 s in a departure), and a request
+        // withdrawn inside the fast scan can never write the floor.
+        if timedCurrentAsk == .grid, !timedSecondAskUsedThisCycle {
+            timedSecondAskUsedThisCycle = true
+            let fireAt = Date().addingTimeInterval(G7TimedConnect.secondAskDelay)
+            timedFireTimer?.cancel()
+            let t = DispatchSource.makeTimerSource(queue: managerQueue)
+            t.schedule(deadline: .now() + G7TimedConnect.secondAskDelay)
+            t.setEventHandler { [weak self] in self?.managerQueue_timedFire(scheduled: fireAt, ask: .second) }
+            t.resume()
+            timedFireTimer = t
+            Self.census(String(format: "timed: SECOND ASK in %.1f s — one per cycle, same bound, withdrawn inside the fast scan (a refusal can COUNT, never floor)",
+                               G7TimedConnect.secondAskDelay))
+            return
+        }
         managerQueue_timedNoteMissAndRearm()
     }
 
@@ -1268,13 +1297,22 @@ public enum G7TimedConnect {
     /// (14:01:38.6 → 14:06:38.7 on 2026-09-12; crystal drift ≈ 4 s/day against wall clock).
     public static let period: TimeInterval = 300
     /// Issue the connect this long AFTER the grid point. The anchor is the last reading's own
-    /// timestamp and the sensor starts advertising ≈ +2.0 s after it (n=20 overnight 2026-09-12:
-    /// connects at +2.0…+3.1 s), so +1 puts the request up one second before the burst and the
-    /// 5-s bound covers burst −1…+4 s. Anchoring on our CONNECT time instead walked the window
-    /// 1.2 s later every cycle and put the first fires after a reseed 8–11 s into the burst.
-    public static let fireOffset: TimeInterval = 1
+    /// timestamp and the sensor starts advertising +2.0…+3.2 s after it (61 cycles on
+    /// 2026-09-12: +2.0–2.2 with no phone, +2.7–3.2 with the phone collecting). Being LATE is
+    /// free — a request placed mid-burst completes in ~0.03 s — while every second before the
+    /// burst is window wasted, so the request goes up AT the burst start and the whole 5-s bound
+    /// sits inside it (burst +0…+5 s). +1 gave only 3–4 s of overlap and 4 misses in 61.
+    /// Anchoring on our CONNECT time instead walked the window 1.2 s later every cycle.
+    public static let fireOffset: TimeInterval = 3
     /// Withdraw a still-pending request this long after issuing it (< the daemon's 6-s fast scan).
     public static let bound: TimeInterval = 5
+    /// SECOND ASK (2026-09-13): a grid request that heard nothing for the whole bound is withdrawn
+    /// and, this long later, asked ONCE more with the same bound — burst +5.5…+10.5 s. Misses
+    /// cluster in departures, where the sensor advertises 25–30 s, so the second window has adverts
+    /// to catch. Exposure: at most one COUNT per miss if the sensor refuses and the link dies —
+    /// never the −70 floor, which needs a failure > 6 s after its request and every request of
+    /// ours is withdrawn before that. Preregistered: the count in the next capture is the verdict.
+    public static let secondAskDelay: TimeInterval = 0.5
     public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
     /// Does the app currently have background runtime (a keepalive holder: a loan, or E1)?
     /// The watch app installs this. nil = assume yes (iOS, tests). With no runtime a suspended
