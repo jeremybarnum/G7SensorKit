@@ -14,7 +14,8 @@
 //  glucose read (4E) on control(3534). The AES-auth slot byte defaults to 0x01, the concurrent
 //  slot proven to coexist with an active phone (auth=1).
 //
-//  Diagnostic / experimental. Fired only when the G7Lab.directAuth toggle is on.
+//  The watch's production acquisition path since 2026-09-13 (G7DirectAuth.enabled, default ON on
+//  watchOS); the G7Lab.directAuth key is the diagnostic override.
 //
 
 import Foundation

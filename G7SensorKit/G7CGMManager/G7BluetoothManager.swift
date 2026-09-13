@@ -356,7 +356,14 @@ class G7BluetoothManager: NSObject {
             Self.census("timed: no keepalive holder — standing down (no connects until a loan/E1 gives the app runtime)")
             return
         }
-        guard let anchor = timedAnchor else { Self.census("timed: cannot arm — no anchor"); return }
+        guard let anchor = timedAnchor else {
+            // No reading has ever anchored the grid (fresh install, or timed ON by default with
+            // nothing persisted). Stock's scan+connect finds the sensor; its first reading
+            // anchors the grid and the pass ends. The pass re-arms here on its 90-s cap, so a
+            // sensor that is not around yet is retried every 90 s — stock scans continuously.
+            managerQueue_startTimedReacquirePass(reason: "no reading to anchor on yet", scan: true)
+            return
+        }
         let fireAt = G7TimedConnect.nextFire(anchor: anchor, now: Date())
         let t = DispatchSource.makeTimerSource(queue: managerQueue)
         t.schedule(deadline: .now() + max(0.05, fireAt.timeIntervalSinceNow))
@@ -1247,8 +1254,8 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 /// Pass = no −70 ever, and no "Retrying" line after one of our cancels. The −70 is measured from
 /// the request, not the burst, so `bound` sits under the daemon's 6-s fast scan with margin.
 /// DIRECT AUTH — our OWN J-PAKE authentication to the G7 (see G7DirectAuthSession), so the
-/// watch/phone reads glucose with no Dexcom app present. Diagnostic, default OFF. The pairing
-/// code (J-PAKE PIN) is provided by us; defaults to the current bench sensor.
+/// watch reads glucose with no Dexcom app present. Default ON on watchOS since 2026-09-13; the
+/// per-sensor pairing code is entered once on the phone and rides to the watch in the context.
 public enum G7DirectAuth {
     public static let key = "G7Lab.directAuth"
     /// Per-sensor pairing codes keyed by sensor name (DXCM…): the BLE layer's mirror of
@@ -1262,7 +1269,17 @@ public enum G7DirectAuth {
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.directAuth.needsCode"
     public static let slotByte: UInt8 = 0x01   // concurrent slot, proven to coexist with a phone (auth=1)
-    public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+    /// WATCH: ON by default since 2026-09-13 — the watch reads the sensor with its own handshake
+    /// (no Dexcom watch app). PHONE: OFF — the phone keeps stock acquisition. The key remains a
+    /// diagnostic override on the watch's diagnostics screen.
+    public static var enabled: Bool {
+        if let v = UserDefaults.standard.object(forKey: key) as? Bool { return v }
+        #if os(watchOS)
+        return true
+        #else
+        return false
+        #endif
+    }
 
     public static var pins: [String: String] {
         get { UserDefaults.standard.dictionary(forKey: pinsKey) as? [String: String] ?? [:] }
@@ -1313,7 +1330,16 @@ public enum G7TimedConnect {
     /// never the −70 floor, which needs a failure > 6 s after its request and every request of
     /// ours is withdrawn before that. Preregistered: the count in the next capture is the verdict.
     public static let secondAskDelay: TimeInterval = 0.5
-    public static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+    /// WATCH: ON by default since 2026-09-13 — one bounded request per burst is how the watch
+    /// acquires. PHONE: OFF (stock). The key remains a diagnostic override on the watch.
+    public static var enabled: Bool {
+        if let v = UserDefaults.standard.object(forKey: key) as? Bool { return v }
+        #if os(watchOS)
+        return true
+        #else
+        return false
+        #endif
+    }
     /// Does the app currently have background runtime (a keepalive holder: a loan, or E1)?
     /// The watch app installs this. nil = assume yes (iOS, tests). With no runtime a suspended
     /// app cannot honour the 5-s bound — on 2026-09-12 its timers fired +234…+468 s late and a
