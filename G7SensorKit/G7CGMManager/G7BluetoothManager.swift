@@ -221,6 +221,11 @@ class G7BluetoothManager: NSObject {
     /// The grid ask heard nothing → one SECOND ASK (G7TimedConnect.secondAskDelay). Reset on a
     /// grid fire, never by the second ask itself.
     private var timedSecondAskUsedThisCycle = false
+    /// A second ask is scheduled and its timer is live in `timedFireTimer`. The bounded cancel's
+    /// own didDisconnect arrives a millisecond later and would otherwise re-arm the grid over it —
+    /// which is exactly what happened on 2026-09-13 (four "SECOND ASK in 0.5 s" lines, zero
+    /// second asks issued). didDisconnect consumes this flag and leaves the timer alone.
+    private var timedSecondAskPending = false
     /// A failed handshake asked for the retry while its link was still up (AES failure: the sensor
     /// closes ~3 s later). didDisconnect consumes this and schedules the retry from the real close.
     private var timedRetryPending = false
@@ -343,6 +348,7 @@ class G7BluetoothManager: NSObject {
         timedReacquirePass = false
         timedMisses = 0
         timedRetryPending = false
+        timedSecondAskPending = false
         Self.census("timed: OFF — timers torn down, normal acquisition resumes")
     }
 
@@ -392,6 +398,7 @@ class G7BluetoothManager: NSObject {
             timedRetryUsedThisCycle = false
             timedSecondAskUsedThisCycle = false
         }
+        if ask == .second { timedSecondAskPending = false }   // the timer has fired; a later close re-arms normally
         let isRetry = ask == .retry
         guard G7TimedConnect.hasRuntime else {
             // The keepalive was released after this timer was armed. A connect issued by a process
@@ -492,6 +499,7 @@ class G7BluetoothManager: NSObject {
         // withdrawn inside the fast scan can never write the floor.
         if timedCurrentAsk == .grid, !timedSecondAskUsedThisCycle {
             timedSecondAskUsedThisCycle = true
+            timedSecondAskPending = true
             let fireAt = Date().addingTimeInterval(G7TimedConnect.secondAskDelay)
             timedFireTimer?.cancel()
             let t = DispatchSource.makeTimerSource(queue: managerQueue)
@@ -1151,6 +1159,12 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         if timedRetryPending {
             timedRetryPending = false
             managerQueue_scheduleTimedRetry(closeAt: Date())
+            return
+        }
+        // This is the disconnect the bounded cancel itself produced and a second ask is already
+        // scheduled: leave its timer alone. Re-arming here cancelled it every time (2026-09-13).
+        if timedSecondAskPending {
+            timedSecondAskPending = false
             return
         }
 
