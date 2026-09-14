@@ -415,8 +415,13 @@ class G7BluetoothManager: NSObject {
             return
         }
         guard centralManager.state == .poweredOn else { Self.census("timed[system-held]: radio not powered on — will arm on power"); return }
-        guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
-            managerQueue_startTimedReacquirePass(reason: "no adopted peripheral (relaunch drops it)", scan: true)
+        // A relaunch drops the adopted peripheral; under this arm the persisted identifier
+        // brings it back without a scan, so the request can be lodged from the first launch.
+        let remembered = activePeripheralIdentifier == nil
+        let id = activePeripheralIdentifier
+            ?? (UserDefaults.standard.string(forKey: G7TimedConnect.adoptedPeripheralKey)).flatMap(UUID.init(uuidString:))
+        guard let id = id, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
+            managerQueue_startTimedReacquirePass(reason: "no adopted peripheral and none remembered", scan: true)
             return
         }
         if peripheral.state == .connected { Self.census("timed[system-held]: already connected — the next request is lodged at close"); return }
@@ -426,6 +431,7 @@ class G7BluetoothManager: NSObject {
             activePeripheralManager?.delegate = self
         }
         managedPeripherals[peripheral.identifier] = activePeripheralManager
+        if remembered { Self.census("timed[system-held]: re-adopted the remembered peripheral \(peripheral.name ?? "unnamed") after a relaunch — no scan") }
         let fireAt = G7TimedConnect.nextFire(anchor: anchor, now: Date())
         let delay = max(0, fireAt.timeIntervalSinceNow)
         timedIssuedAt = fireAt          // "after issue" ages count from the scheduled START
@@ -435,16 +441,14 @@ class G7BluetoothManager: NSObject {
         timedSystemHeldLodged = true
         G7RadioCensus.noteConnectPending()
         centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: delay)])
-        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %.0f s, anchor %@); the app may sleep",
+        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %.0f s, anchor %@); no withdrawal, the app may sleep",
                            Self.timedClock.string(from: fireAt), delay, Self.timedClock.string(from: anchor)))
-        // Best-effort bound: withdraws at start+bound ONLY if this process is still running then.
-        // If it is not, the request stands into the sensor's tail — that cost is part of the answer.
-        timedCancelTimer?.cancel()
-        let c = DispatchSource.makeTimerSource(queue: managerQueue)
-        c.schedule(deadline: .now() + delay + G7TimedConnect.bound)
-        c.setEventHandler { [weak self] in self?.managerQueue_timedBoundedCancel(peripheral) }
-        c.resume()
-        timedCancelTimer = c
+        // No bound, by the model under test (Pete, 2026-09-14): the delay is what keeps the
+        // request off the air through the sensitive period after our own disconnect, and once
+        // it passes the request stands until the system connects it. A missed burst therefore
+        // shows up as "link up +300 s" (the next burst) and, if nobody is awake for the
+        // handshake, as a failed establishment in the capture — that is the measurement.
+        timedCancelTimer?.cancel(); timedCancelTimer = nil
     }
 
     /// A 2-s heartbeat that only advances while the process runs: its staleness at didConnect is
@@ -652,6 +656,14 @@ class G7BluetoothManager: NSObject {
         didSet {
             oldValue?.delegate = nil
             lockedPeripheralIdentifier.value = activePeripheralManager?.peripheral.identifier
+            // Remembered across relaunches for the system-held arm only: a relaunch otherwise
+            // drops the adopted peripheral and the arm can lodge nothing until a scan pass finds
+            // the sensor again — which, with no runtime, it never does (2026-09-14 05:37→06:03).
+            if let id = activePeripheralManager?.peripheral.identifier {
+                UserDefaults.standard.set(id.uuidString, forKey: G7TimedConnect.adoptedPeripheralKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: G7TimedConnect.adoptedPeripheralKey)
+            }
         }
     }
 
@@ -1459,6 +1471,9 @@ public enum G7TimedConnect {
     /// once, so flipping it needs an app relaunch.
     public static let systemHeldKey = "G7Lab.timedConnect.systemHeld"
     public static var systemHeld: Bool { UserDefaults.standard.bool(forKey: systemHeldKey) }
+    /// The adopted peripheral's CoreBluetooth identifier, remembered so the system-held arm can
+    /// re-adopt it at launch without a scan (cleared when the peripheral is forgotten).
+    public static let adoptedPeripheralKey = "G7Lab.timedConnect.adoptedPeripheral"
     /// Pure, pinned by WatchAppTests: the next grid-aligned fire time strictly after `now + margin`.
     /// Grid point n fires at anchor + n·period + fireOffset, where `anchor` is a reading's own
     /// sensor timestamp. Every reading re-anchors, so wall-clock drift never accumulates.
