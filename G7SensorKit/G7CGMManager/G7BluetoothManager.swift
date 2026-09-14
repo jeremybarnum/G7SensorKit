@@ -464,15 +464,37 @@ class G7BluetoothManager: NSObject {
         timedCancelTimer?.cancel(); timedCancelTimer = nil
     }
 
-    /// A 2-s heartbeat that only advances while the process runs: its staleness at didConnect is
-    /// how long the app was asleep before the system brought it back for the link.
+    /// A 2-s heartbeat that only advances while the process runs. On resume the coalesced timer
+    /// fires BEFORE the queued Bluetooth callbacks are delivered (field 10:11:40: "last ran 0.0 s"
+    /// after a 14-minute sleep), so the staleness of the last tick says nothing at didConnect.
+    /// What survives the resume is the GAP the tick just observed: a tick more than 4 s after
+    /// its predecessor means the process was asleep in between, and that gap is the sleep.
+    private var timedLastSleep: (until: Date, seconds: TimeInterval)?
+
     private func managerQueue_startAwakeTick() {
         guard timedAwakeTimer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: managerQueue)
         t.schedule(deadline: .now(), repeating: 2)
-        t.setEventHandler { [weak self] in self?.timedAwakeTick = Date() }
+        t.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let now = Date()
+            if let last = self.timedAwakeTick, now.timeIntervalSince(last) > 4 {
+                self.timedLastSleep = (now, now.timeIntervalSince(last))
+            }
+            self.timedAwakeTick = now
+        }
         t.resume()
         timedAwakeTimer = t
+    }
+
+    /// "SLEPT 843 s and resumed 0.1 s before this callback" — or awake, with the tick age.
+    private var timedSleepSummary: String {
+        let now = Date()
+        if let s = timedLastSleep, now.timeIntervalSince(s.until) < 3 {
+            return String(format: "app SLEPT %.0f s and resumed %.1f s before this callback", s.seconds, now.timeIntervalSince(s.until))
+        }
+        if let tick = timedAwakeTick { return String(format: "app awake (last tick %.1f s ago)", now.timeIntervalSince(tick)) }
+        return "app never ticked in this launch (relaunched for it)"
     }
 
     private func managerQueue_timedFire(scheduled: Date, ask: TimedAsk = .grid) {
@@ -1158,9 +1180,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             if G7TimedConnect.systemHeld {
                 timedSystemHeldLodged = false
                 timedSystemHeldRefusals = 0
-                let asleep = timedAwakeTick.map { Date().timeIntervalSince($0) }
-                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · app last ran %@ before this callback",
-                                   age, asleep.map { String(format: "%.1f s", $0) } ?? "never in this launch (relaunched for it)"))
+                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@", age, timedSleepSummary))
             }
         }
 
