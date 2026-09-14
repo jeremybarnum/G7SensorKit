@@ -1232,8 +1232,29 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             self.directAuthSession = session
             self.directAuthLinkStartedAt = Date()
             Self.census("[direct-auth] starting handshake (\(pin.count)-digit pin, slot 0x\(String(format: "%02x", G7DirectAuth.slotByte)))")
+            // HOLD OFF SUSPENSION for the handshake (2026-09-14). watchOS resumes a suspended app for
+            // a Bluetooth link — measured twice on the system-held arm — but gives it ~1–2 s, and the
+            // handshake needs ~6–8: every background handshake was cut off mid-round. This is the
+            // documented way to ask for more: the block runs while the system holds the process,
+            // and is called again with `expired = true` when the grant runs out. The grant length is
+            // undocumented, so both edges are logged for the capture. Under the keepalive the block
+            // just returns when the handshake settles; it costs nothing there.
+            let hold = DispatchSemaphore(value: 0)
+            let holdStarted = Date()
+            DispatchQueue.global(qos: .userInitiated).async {
+                ProcessInfo.processInfo.performExpiringActivity(withReason: "G7 direct-auth handshake") { expired in
+                    if expired {
+                        Self.census(String(format: "[direct-auth] suspension hold EXPIRED after %.1f s — the system is suspending us", Date().timeIntervalSince(holdStarted)))
+                        return
+                    }
+                    Self.census("[direct-auth] suspension hold GRANTED — holding the process until the handshake settles (20 s cap)")
+                    let outcome = hold.wait(timeout: .now() + 20)
+                    Self.census(String(format: "[direct-auth] suspension hold released after %.1f s (%@)", Date().timeIntervalSince(holdStarted), outcome == .success ? "handshake settled" : "cap"))
+                }
+            }
             Task {
                 let r = await session.run()
+                hold.signal()
                 Self.census("[direct-auth] RESULT auth=\(r.authByte.map { "\($0)" } ?? "-") bond=\(r.bondByte.map { "\($0)" } ?? "-") glucose=\(r.glucose.map { "\($0)" } ?? "nil")\(r.error.map { " error=\($0)" } ?? "")")
                 // INGEST: hand the reading to Loop through the STOCK path. Clear the stock
                 // observer's pending-auth first (so the sensor's routine hang-up is not misread
