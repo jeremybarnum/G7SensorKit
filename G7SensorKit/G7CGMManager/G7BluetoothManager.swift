@@ -351,6 +351,8 @@ class G7BluetoothManager: NSObject {
         timedSecondAskPending = false
         timedAwakeTimer?.cancel(); timedAwakeTimer = nil
         timedSystemHeldLodged = false
+        timedSystemHeldRefusals = 0
+        timedSystemHeldDisabled = false
         Self.census("timed: OFF — timers torn down, normal acquisition resumes")
     }
 
@@ -358,7 +360,7 @@ class G7BluetoothManager: NSObject {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled else { return }
         timedFireTimer?.cancel(); timedFireTimer = nil
-        if G7TimedConnect.systemHeld { managerQueue_armSystemHeldConnect(); return }
+        if G7TimedConnect.systemHeld, !timedSystemHeldDisabled { managerQueue_armSystemHeldConnect(); return }
         guard G7TimedConnect.hasRuntime else {
             // No keepalive holder: a suspended app cannot honour the bound. Stand down; the
             // watch app calls timedRuntimeDidChange() when a loan/E1 starts and we re-arm.
@@ -406,6 +408,11 @@ class G7BluetoothManager: NSObject {
     private var timedAwakeTimer: DispatchSourceTimer?
     private var timedAwakeTick: Date?
     private var timedSystemHeldLodged = false
+    private var timedSystemHeldLodgedAt: Date?
+    private var timedSystemHeldRefusals = 0
+    /// Set after two immediate refusals: the platform declines the option, so the arm yields to
+    /// the ordinary timer for the rest of this launch instead of spinning.
+    private var timedSystemHeldDisabled = false
 
     private func managerQueue_armSystemHeldConnect() {
         dispatchPrecondition(condition: .onQueue(managerQueue))
@@ -439,10 +446,16 @@ class G7BluetoothManager: NSObject {
         timedRetryUsedThisCycle = false
         timedSecondAskUsedThisCycle = false
         timedSystemHeldLodged = true
+        timedSystemHeldLodgedAt = Date()
         G7RadioCensus.noteConnectPending()
-        centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: delay)])
-        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %.0f s, anchor %@); no withdrawal, the app may sleep",
-                           Self.timedClock.string(from: fireAt), delay, Self.timedClock.string(from: anchor)))
+        // Whole seconds: the first field run passed a fractional NSNumber and the daemon answered
+        // every request with CBError 1 (invalid parameters) at once. The docs say "number of
+        // seconds"; an integer is the one remaining form worth trying before the option is
+        // declared unavailable on the watch.
+        let wholeSeconds = Int(delay.rounded(.up))
+        centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: wholeSeconds)])
+        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %d s, anchor %@); no withdrawal, the app may sleep",
+                           Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor)))
         // No bound, by the model under test (Pete, 2026-09-14): the delay is what keeps the
         // request off the air through the sensitive period after our own disconnect, and once
         // it passes the request stands until the system connects it. A missed burst therefore
@@ -1144,6 +1157,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             }
             if G7TimedConnect.systemHeld {
                 timedSystemHeldLodged = false
+                timedSystemHeldRefusals = 0
                 let asleep = timedAwakeTick.map { Date().timeIntervalSince($0) }
                 Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · app last ran %@ before this callback",
                                    age, asleep.map { String(format: "%.1f s", $0) } ?? "never in this launch (relaunched for it)"))
@@ -1281,6 +1295,39 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
 
         log.error("%{public}@: %{public}@", #function, String(describing: error))
         if G7TimedConnect.enabled {
+            if G7TimedConnect.systemHeld, timedSystemHeldLodged {
+                // The daemon answered the LODGED request itself. An immediate refusal — within a
+                // second or two of the call, "One or more parameters were invalid" — is the
+                // platform declining the start-delay option, and it must never be re-lodged
+                // synchronously (2026-09-14 08:58: 26,558 spins in one wake). Two refusals in a
+                // launch disable the arm; a LATE failure (the request went live and could not
+                // connect) re-lodges for the next grid point through the ordinary miss path.
+                timedSystemHeldLodged = false
+                timedCancelTimer?.cancel(); timedCancelTimer = nil
+                timedIssuedAt = nil
+                let sinceLodge = timedSystemHeldLodgedAt.map { Date().timeIntervalSince($0) } ?? -1
+                let code = (error as NSError?).map { "\($0.domain)#\($0.code) \($0.localizedDescription)" } ?? "no error"
+                if sinceLodge < 2 {
+                    timedSystemHeldRefusals += 1
+                    Self.census(String(format: "timed[system-held]: REFUSED by the daemon %.2f s after lodging — %@ (%d of 2)", sinceLodge, code, timedSystemHeldRefusals))
+                    if timedSystemHeldRefusals >= 2 {
+                        timedSystemHeldDisabled = true
+                        Self.census("timed[system-held]: arm DISABLED for this launch — the platform declines the start-delay option; back to our own timer under the keepalive")
+                        managerQueue_armTimedConnect()
+                        return
+                    }
+                    let t = DispatchSource.makeTimerSource(queue: managerQueue)
+                    t.schedule(deadline: .now() + 30)
+                    t.setEventHandler { [weak self] in self?.managerQueue_armTimedConnect() }
+                    t.resume()
+                    timedFireTimer = t
+                    Self.census("timed[system-held]: one more lodge in 30 s, then the arm stands down")
+                    return
+                }
+                Self.census(String(format: "timed[system-held]: request failed %.0f s after lodging — %@; re-lodging for the next grid point", sinceLodge, code))
+                managerQueue_timedNoteMissAndRearm()
+                return
+            }
             timedCancelTimer?.cancel(); timedCancelTimer = nil
             timedSystemHeldLodged = false
             let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
