@@ -349,6 +349,8 @@ class G7BluetoothManager: NSObject {
         timedMisses = 0
         timedRetryPending = false
         timedSecondAskPending = false
+        timedAwakeTimer?.cancel(); timedAwakeTimer = nil
+        timedSystemHeldLodged = false
         Self.census("timed: OFF — timers torn down, normal acquisition resumes")
     }
 
@@ -356,6 +358,7 @@ class G7BluetoothManager: NSObject {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled else { return }
         timedFireTimer?.cancel(); timedFireTimer = nil
+        if G7TimedConnect.systemHeld { managerQueue_armSystemHeldConnect(); return }
         guard G7TimedConnect.hasRuntime else {
             // No keepalive holder: a suspended app cannot honour the bound. Stand down; the
             // watch app calls timedRuntimeDidChange() when a loan/E1 starts and we re-arm.
@@ -390,6 +393,71 @@ class G7BluetoothManager: NSObject {
         }
     }
 
+    // MARK: System-held connect — the start-delay arm (Pete's suggestion; EXPERIMENT, default OFF)
+    //
+    // Same grid, same single request per burst, different holder. Our timer needs the app awake
+    // at the burst (hence the keepalive); here the request is lodged with the daemon NOW, with
+    // CBConnectPeripheralOptionStartDelayKey = time to the next burst start, and the system
+    // starts it whether we are running or not. The central is created with a restore identifier
+    // in this mode, so watchOS may relaunch us for the link. Two things are measured, in the log
+    // and in the capture: how long after the link came up the app actually ran (the wake latency
+    // the 2026-09-03 tape called fatal — measured then on a central that had NOT opted in), and
+    // what a miss costs when nobody is awake to withdraw the request before the sensor's tail.
+    private var timedAwakeTimer: DispatchSourceTimer?
+    private var timedAwakeTick: Date?
+    private var timedSystemHeldLodged = false
+
+    private func managerQueue_armSystemHeldConnect() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        managerQueue_startAwakeTick()
+        guard let anchor = timedAnchor else {
+            managerQueue_startTimedReacquirePass(reason: "no reading to anchor on yet", scan: true)
+            return
+        }
+        guard centralManager.state == .poweredOn else { Self.census("timed[system-held]: radio not powered on — will arm on power"); return }
+        guard let id = activePeripheralIdentifier, let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first else {
+            managerQueue_startTimedReacquirePass(reason: "no adopted peripheral (relaunch drops it)", scan: true)
+            return
+        }
+        if peripheral.state == .connected { Self.census("timed[system-held]: already connected — the next request is lodged at close"); return }
+        if timedSystemHeldLodged { Self.census("timed[system-held]: a request is already lodged — keeping it"); return }
+        if let pm = activePeripheralManager { pm.peripheral = peripheral } else {
+            activePeripheralManager = G7PeripheralManager(peripheral: peripheral, configuration: .dexcomG7, centralManager: centralManager)
+            activePeripheralManager?.delegate = self
+        }
+        managedPeripherals[peripheral.identifier] = activePeripheralManager
+        let fireAt = G7TimedConnect.nextFire(anchor: anchor, now: Date())
+        let delay = max(0, fireAt.timeIntervalSinceNow)
+        timedIssuedAt = fireAt          // "after issue" ages count from the scheduled START
+        timedCurrentAsk = .grid
+        timedRetryUsedThisCycle = false
+        timedSecondAskUsedThisCycle = false
+        timedSystemHeldLodged = true
+        G7RadioCensus.noteConnectPending()
+        centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: delay)])
+        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %.0f s, anchor %@); the app may sleep",
+                           Self.timedClock.string(from: fireAt), delay, Self.timedClock.string(from: anchor)))
+        // Best-effort bound: withdraws at start+bound ONLY if this process is still running then.
+        // If it is not, the request stands into the sensor's tail — that cost is part of the answer.
+        timedCancelTimer?.cancel()
+        let c = DispatchSource.makeTimerSource(queue: managerQueue)
+        c.schedule(deadline: .now() + delay + G7TimedConnect.bound)
+        c.setEventHandler { [weak self] in self?.managerQueue_timedBoundedCancel(peripheral) }
+        c.resume()
+        timedCancelTimer = c
+    }
+
+    /// A 2-s heartbeat that only advances while the process runs: its staleness at didConnect is
+    /// how long the app was asleep before the system brought it back for the link.
+    private func managerQueue_startAwakeTick() {
+        guard timedAwakeTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: managerQueue)
+        t.schedule(deadline: .now(), repeating: 2)
+        t.setEventHandler { [weak self] in self?.timedAwakeTick = Date() }
+        t.resume()
+        timedAwakeTimer = t
+    }
+
     private func managerQueue_timedFire(scheduled: Date, ask: TimedAsk = .grid) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         timedFireTimer = nil
@@ -400,7 +468,9 @@ class G7BluetoothManager: NSObject {
         }
         if ask == .second { timedSecondAskPending = false }   // the timer has fired; a later close re-arms normally
         let isRetry = ask == .retry
-        guard G7TimedConnect.hasRuntime else {
+        // Under the system-held arm we are awake by definition when this runs (a retry or second
+        // ask is scheduled from a callback), so a bare bounded connect is fine without a holder.
+        guard G7TimedConnect.hasRuntime || G7TimedConnect.systemHeld else {
             // The keepalive was released after this timer was armed. A connect issued by a process
             // about to be suspended is exactly the un-cancellable request the bound exists to
             // prevent: stand down instead of arming the next cycle.
@@ -497,7 +567,10 @@ class G7BluetoothManager: NSObject {
         // The grid ask heard nothing: ask once more, half a second later, same bound. The burst is
         // still on the air (7 s with the phone collecting, 25–30 s in a departure), and a request
         // withdrawn inside the fast scan can never write the floor.
-        if timedCurrentAsk == .grid, !timedSecondAskUsedThisCycle {
+        // No second ask under the system-held arm: that arm is one daemon-held request per grid
+        // point, and the next one is lodged by the re-arm below.
+        timedSystemHeldLodged = false
+        if timedCurrentAsk == .grid, !timedSecondAskUsedThisCycle, !G7TimedConnect.systemHeld {
             timedSecondAskUsedThisCycle = true
             timedSecondAskPending = true
             let fireAt = Date().addingTimeInterval(G7TimedConnect.secondAskDelay)
@@ -605,10 +678,16 @@ class G7BluetoothManager: NSObject {
         super.init()
 
         managerQueue.sync {
-#if os(iOS) // watchOS has no CoreBluetooth state restoration; the watch host owns reconnect policy
+#if os(iOS)
             self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
 #else
-            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: nil)
+            // The watch host owns reconnect policy, so the watch central normally opts OUT of
+            // state restoration. The system-held experiment (G7TimedConnect.systemHeld) opts in:
+            // the watchOS 9+ SDK documents relaunching an app into the background to finish
+            // Bluetooth work (willRestoreState + WKBluetoothAlertRefreshBackgroundTask), and
+            // whether that wake is prompt enough for the sensor's window is the question.
+            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue,
+                options: G7TimedConnect.systemHeld ? [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"] : nil)
 #endif
         }
     }
@@ -991,18 +1070,23 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         }
     }
 
-#if os(iOS) // watchOS has no CoreBluetooth state restoration (willRestoreState / restored-state keys are iOS-only)
+    // On the watch this fires only under the system-held experiment (the central opts into
+    // restoration only then); the watchOS 26.5 SDK declares it alongside the restore keys.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            Self.census("RESTORED by the system — relaunched for Bluetooth with \(peripherals.count) peripheral(s): "
+                        + peripherals.map { "\($0.name ?? "unnamed") state=\($0.state.rawValue)" }.joined(separator: ", "))
             for peripheral in peripherals {
                 log.default("Restoring peripheral from state: %{public}@", peripheral.identifier.uuidString)
                 handleDiscoveredPeripheral(peripheral)
+                // An already-connected peripheral gets no second didConnect: run that path now so
+                // the handshake starts on the link the system brought us back for.
+                if peripheral.state == .connected { self.centralManager(central, didConnect: peripheral) }
             }
         }
     }
-#endif
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
@@ -1045,6 +1129,12 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 // The latency after issue says where the burst is: ~0.05 s = already advertising
                 // when we asked; ~1 s = it started that long after our fire.
                 Self.census(String(format: "timed: didConnect at +%.2f s after issue", age))
+            }
+            if G7TimedConnect.systemHeld {
+                timedSystemHeldLodged = false
+                let asleep = timedAwakeTick.map { Date().timeIntervalSince($0) }
+                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · app last ran %@ before this callback",
+                                   age, asleep.map { String(format: "%.1f s", $0) } ?? "never in this launch (relaunched for it)"))
             }
         }
 
@@ -1180,6 +1270,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         log.error("%{public}@: %{public}@", #function, String(describing: error))
         if G7TimedConnect.enabled {
             timedCancelTimer?.cancel(); timedCancelTimer = nil
+            timedSystemHeldLodged = false
             let age = timedIssuedAt.map { Date().timeIntervalSince($0) } ?? -1
             // THE MOVE UNDER TEST: withdraw the request the instant it fails, before the daemon's
             // own "Connection failed, Retrying" re-adds the device and lands a late attempt in the
@@ -1361,6 +1452,13 @@ public enum G7TimedConnect {
     /// earlier — so timed fires stand down until a holder exists, and re-arm when one appears.
     public static var runtimeAvailable: (() -> Bool)?
     static var hasRuntime: Bool { runtimeAvailable?() ?? true }
+    /// EXPERIMENT (2026-09-13, Pete's suggestion): lodge each grid request with the daemon via
+    /// CBConnectPeripheralOptionStartDelayKey instead of firing it from our own timer, and opt the
+    /// watch central into state restoration so the system may relaunch us for the link. No
+    /// keepalive needed by design — that is what it tests. Default OFF; the central is created
+    /// once, so flipping it needs an app relaunch.
+    public static let systemHeldKey = "G7Lab.timedConnect.systemHeld"
+    public static var systemHeld: Bool { UserDefaults.standard.bool(forKey: systemHeldKey) }
     /// Pure, pinned by WatchAppTests: the next grid-aligned fire time strictly after `now + margin`.
     /// Grid point n fires at anchor + n·period + fireOffset, where `anchor` is a reading's own
     /// sensor timestamp. Every reading re-anchors, so wall-clock drift never accumulates.
