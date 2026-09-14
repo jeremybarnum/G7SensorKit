@@ -440,7 +440,27 @@ extension G7PeripheralManager: CBPeripheralDelegate {
         commandLock.unlock()
     }
 
+    /// watchOS 9+ delivers its background-runtime budget warnings IN THE ERROR FIELD of a GATT
+    /// notification update (WWDC 2022 session 10135): CBError 18 = near the limit, 17 = exceeded
+    /// (no more background BLE runtime until the user interacts with the app or 24 h pass).
+    /// The command machinery only keeps an error a command is waiting for; an unsolicited update's
+    /// error was dropped on the floor, so the one signal Apple says to rely on was invisible.
+    private func reportGattError(_ error: Error?, during what: String, on characteristic: CBCharacteristic) {
+        guard let error = error else { return }
+        let ns = error as NSError
+        var tag = ""
+        if ns.domain == CBErrorDomain {
+            switch ns.code {
+            case 18: tag = " *** NEAR the watchOS background-notification limit (CBError 18) — the next background wake may be the last before the reset ***"
+            case 17: tag = " *** EXCEEDED the watchOS background-notification limit (CBError 17) — no background BLE runtime until the user interacts with the app or 24 h pass ***"
+            default: break
+            }
+        }
+        G7RadioCensus.sink?("[gatt] \(what) error on \(characteristic.uuid) — \(error.localizedDescription) (\(ns.domain)#\(ns.code))\(tag)")
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        reportGattError(error, during: "notification-state update", on: characteristic)
         commandLock.lock()
 
         if let index = commandConditions.firstIndex(where: { (condition) -> Bool in
@@ -483,6 +503,7 @@ extension G7PeripheralManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        reportGattError(error, during: "value update", on: characteristic)
         commandLock.lock()
 
         var notifyDelegate = false
