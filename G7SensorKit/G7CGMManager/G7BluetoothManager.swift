@@ -490,11 +490,12 @@ class G7BluetoothManager: NSObject {
     /// "SLEPT 843 s and resumed 0.1 s before this callback" — or awake, with the tick age.
     private var timedSleepSummary: String {
         let now = Date()
+        let pid = "pid \(ProcessInfo.processInfo.processIdentifier)"   // same pid across wakes = resumed; new pid = relaunched
         if let s = timedLastSleep, now.timeIntervalSince(s.until) < 3 {
-            return String(format: "app SLEPT %.0f s and resumed %.1f s before this callback", s.seconds, now.timeIntervalSince(s.until))
+            return String(format: "app SLEPT %.0f s and resumed %.1f s before this callback · %@", s.seconds, now.timeIntervalSince(s.until), pid)
         }
-        if let tick = timedAwakeTick { return String(format: "app awake (last tick %.1f s ago)", now.timeIntervalSince(tick)) }
-        return "app never ticked in this launch (relaunched for it)"
+        if let tick = timedAwakeTick { return String(format: "app awake (last tick %.1f s ago) · %@", now.timeIntervalSince(tick), pid) }
+        return "app never ticked in this launch (relaunched for it) · \(pid)"
     }
 
     private func managerQueue_timedFire(scheduled: Date, ask: TimedAsk = .grid) {
