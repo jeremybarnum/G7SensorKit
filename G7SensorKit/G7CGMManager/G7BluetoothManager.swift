@@ -567,6 +567,31 @@ class G7BluetoothManager: NSObject {
         recycleConnectForLab()
     }
 
+    // PURE COMPAT (ported from the pure kit, 2026-09-02): one line separating "our central is
+    // dead" from "the sensor is absent" — central state, scan state, adopted peripheral state,
+    // pending-connect age, last delivery age, last Dexcom-link sighting age, and the three
+    // acquisition switches. Pure's Loop stamps it on every [g7-window]/[quiet]/[g7-drought]
+    // line and the field tooling parses the first six keys, so their names are kept.
+    private func radioSnapshot() -> String {
+        let now = Date()
+        func age(_ d: Date?) -> String { d.map { "\(Int(now.timeIntervalSince($0)))s" } ?? "never" }
+        let pstate: String
+        switch activePeripheral?.state {
+        case .connected?: pstate = "connected"
+        case .connecting?: pstate = "connecting"
+        case .disconnecting?: pstate = "disconnecting"
+        case .disconnected?: pstate = "disconnected"
+        default: pstate = "none"
+        }
+        return "central=\(centralManager.state.rawValue) scanning=\(centralManager.isScanning) peripheral=\(pstate) pendingConnect=\(age(G7RadioCensus.connectPendingSince)) lastDelivery=\(age(lastDeliveryAt)) lastConnEvent=\(age(G7RadioCensus.lastRideSignalAt)) timed=\(G7TimedConnect.enabled) direct=\(G7DirectAuth.enabled) ride=\(G7RidePolicy.rideOnlyEnabled)"
+    }
+
+    /// The loop calls this when glucose is stale during a loan (the [g7-drought] line).
+    func radioSnapshotSync() -> String {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+        return managerQueue.sync { radioSnapshot() }
+    }
+
     var activePeripheralIdentifier: UUID? {
         get {
             return lockedPeripheralIdentifier.value

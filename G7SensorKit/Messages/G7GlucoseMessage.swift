@@ -8,7 +8,6 @@
 
 import Foundation
 import LoopKit
-import LoopAlgorithm
 
 public struct G7GlucoseMessage: SensorMessage, Equatable {
     //public let status: UInt8

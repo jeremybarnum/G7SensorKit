@@ -8,7 +8,6 @@
 
 import Foundation
 import HealthKit
-import LoopAlgorithm
 import LoopKit
 import os.log
 
@@ -21,11 +20,14 @@ public protocol G7StateObserver: AnyObject {
 
 public class G7CGMManager: CGMManager {
     public var inSignalLoss: Bool = false
-    
-    public var isInoperable: Bool {
-        cgmManagerStatus.isInoperable
-    }
-    
+
+    // PURE COMPAT: written on the sensor's delegate queue, read from the UI; Locked keeps the
+    // cross-thread read honest. (Stored here — the delegate extension cannot hold it.)
+    let lockedAuthSubscribeFailureStreak = Locked(0)
+
+    // PURE COMPAT: `isInoperable` (next-dev LoopKit's CGMManagerStatus field) has no counterpart
+    // in this line's LoopKit and nothing in the kit reads it — dropped on this branch.
+
     private let log = OSLog(category: "G7CGMManager")
 
     public var state: G7CGMManagerState {
@@ -255,12 +257,12 @@ public class G7CGMManager: CGMManager {
         return lines.joined(separator: "\n")
     }
 
-    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier) async throws { }
+    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier, completion: @escaping (Error?) -> Void) { completion(nil) }
 
     public func getSoundBaseURL() -> URL? { return nil }
     public func getSounds() -> [Alert.Sound] { return [] }
 
-    public let pluginIdentifier: String = "G7CGMManager"
+    public static let pluginIdentifier: String = "G7CGMManager"
 
     public let localizedTitle = LocalizedString("Dexcom G7", comment: "CGM display title")
 
@@ -357,6 +359,7 @@ public class G7CGMManager: CGMManager {
             state.activatedAt = nil
             state.extendedVersion = nil
         }
+        lockedAuthSubscribeFailureStreak.value = 0   // cold rebuild = fresh slate for the streak too
         sensor.scanForNewSensor()
     }
 
@@ -427,7 +430,7 @@ extension G7CGMManager: G7SensorDelegate {
                     title: "New sensor \(name)",
                     body: "Enter its pairing code in Loop ▸ Dexcom G7 so the watch can read it without your phone. The code is shown in the Dexcom app.",
                     acknowledgeActionButtonLabel: "OK")
-                let alert = Alert(identifier: Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: "directAuth.codeNeeded"),
+                let alert = Alert(identifier: Alert.Identifier(managerIdentifier: Self.pluginIdentifier, alertIdentifier: "directAuth.codeNeeded"),
                                   foregroundContent: content, backgroundContent: content, trigger: .immediate)
                 delegate.notify { delegate in
                     Task { await delegate?.issueAlert(alert) }
@@ -478,10 +481,31 @@ extension G7CGMManager: G7SensorDelegate {
 
 
     public func sensor(_ sensor: G7Sensor, didError error: Error) {
+        // PURE COMPAT: an auth-subscribe failure is the specific "connects but never finishes
+        // setup" signature (notification enable on the auth characteristic). The streak lets
+        // pure's listening UI swap patience for the proven advice once it is undeniable.
+        // Other sensor errors have their own recovery stories and must not feed this counter.
+        if "\(error)".contains("enabling notification") {
+            let streak = lockedAuthSubscribeFailureStreak.mutate { $0 += 1 }
+            logDeviceCommunication("Sensor error \(error) — auth-subscribe failure #\(streak) since last reading", type: .error)
+            return
+        }
         logDeviceCommunication("Sensor error \(error)", type: .error)
     }
 
+    // PURE COMPAT (from the pure kit): the two members pure's watch Loop reads that the
+    // direct-auth kit did not carry. Snapshot = one line for the field log; streak =
+    // consecutive auth-subscribe failures with no intervening reading, read by the glance.
+    public func g7RadioSnapshot() -> String? { sensor.radioSnapshot() }
+
+    public var authSubscribeFailureStreak: Int {
+        lockedAuthSubscribeFailureStreak.value
+    }
+
     public func sensor(_ sensor: G7Sensor, didRead message: G7GlucoseMessage) {
+        // Any real message from the sensor means the subscribe pipeline works end to end —
+        // the auth-subscribe failure streak is over (duplicates included: the pipe delivered).
+        lockedAuthSubscribeFailureStreak.value = 0
 
         guard message != latestReading else {
             logDeviceCommunication("Sensor reading duplicate: \(message)", type: .error)
@@ -524,8 +548,8 @@ extension G7CGMManager: G7SensorDelegate {
             return
         }
 
-        let unit = LoopUnit.milligramsPerDeciliter
-        let quantity = LoopQuantity(unit: unit, doubleValue: Double(min(max(glucose, GlucoseLimits.minimum), GlucoseLimits.maximum)))
+        let unit = HKUnit.milligramsPerDeciliter
+        let quantity = HKQuantity(unit: unit, doubleValue: Double(min(max(glucose, GlucoseLimits.minimum), GlucoseLimits.maximum)))
 
         updateDelegate(with: .newData([
             NewGlucoseSample(
@@ -560,7 +584,7 @@ extension G7CGMManager: G7SensorDelegate {
             return
         }
 
-        let unit = LoopUnit.milligramsPerDeciliter
+        let unit = HKUnit.milligramsPerDeciliter
 
         let samples = backfill.compactMap { entry -> NewGlucoseSample? in
             guard let glucose = entry.glucose else {
@@ -572,7 +596,7 @@ extension G7CGMManager: G7SensorDelegate {
                 return nil
             }
 
-            let quantity = LoopQuantity(unit: unit, doubleValue: Double(min(max(glucose, GlucoseLimits.minimum), GlucoseLimits.maximum)))
+            let quantity = HKQuantity(unit: unit, doubleValue: Double(min(max(glucose, GlucoseLimits.minimum), GlucoseLimits.maximum)))
 
             return NewGlucoseSample(
                 date: activationDate.addingTimeInterval(TimeInterval(entry.timestamp)),
@@ -598,11 +622,11 @@ extension G7CGMManager: G7SensorDelegate {
 }
 
 extension G7BackfillMessage {
-    public var trendRate: LoopQuantity? {
+    public var trendRate: HKQuantity? {
         guard let trend = trend else {
             return nil
         }
-        return LoopQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: trend)
+        return HKQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: trend)
     }
 }
 
@@ -611,18 +635,18 @@ extension G7GlucoseMessage: GlucoseDisplayable {
         return hasReliableGlucose
     }
 
-    public var trendRate: LoopQuantity? {
+    public var trendRate: HKQuantity? {
         guard let trend = trend else {
             return nil
         }
-        return LoopQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: trend)
+        return HKQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: trend)
     }
 
-    public var glucoseQuantity: LoopQuantity? {
+    public var glucoseQuantity: HKQuantity? {
         guard let glucose = glucose else {
             return nil
         }
-        return LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(glucose))
+        return HKQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(glucose))
     }
 
     public var isLocal: Bool {
@@ -642,4 +666,18 @@ extension G7GlucoseMessage: GlucoseDisplayable {
             return nil
         }
     }
+}
+
+
+// PURE COMPAT: this line's LoopKit keeps `HKUnit.milligramsPerDeciliter` internal (next-dev moved
+// the kit onto LoopAlgorithm's LoopUnit/LoopQuantity, which this line does not have). The old
+// pure kit carried these in Common/HKUnit.swift; kept here so no project-file change is needed.
+extension HKUnit {
+    static let milligramsPerDeciliter: HKUnit = {
+        return HKUnit.gramUnit(with: .milli).unitDivided(by: HKUnit.literUnit(with: .deci))
+    }()
+
+    static let milligramsPerDeciliterPerMinute: HKUnit = {
+        return HKUnit.milligramsPerDeciliter.unitDivided(by: .minute())
+    }()
 }

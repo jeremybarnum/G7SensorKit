@@ -104,6 +104,9 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     private let bluetoothManager = G7BluetoothManager()
 
+    // PURE COMPAT: the radio snapshot line pure's Loop stamps on its window/drought lines.
+    func radioSnapshot() -> String { bluetoothManager.radioSnapshotSync() }
+
     private let delegateQueue = DispatchQueue(label: "com.loopkit.G7Sensor.delegateQueue", qos: .unspecified)
 
     private var sensorID: String?
