@@ -41,6 +41,14 @@ public enum G7RadioCensus {
     /// queue.
     public static var sensorClosed: ((String) -> Void)?
     public static var scanStarted: (() -> Void)?
+    /// Battery level + charge state ("pwr 41%/batt", "pwr 88%/chg"), installed by the watch app.
+    /// The arm's own lines carry it because the 2026-09-15 overnight run — 13 reads in 88 bursts —
+    /// had NO power sample anywhere: the tag was only ever appended to loan/cycle lines and no loan
+    /// ran. Docked-and-off-wrist versus on-wrist is a different power regime, and the level's trend
+    /// across wakes is what tells the two apart after the fact.
+    public static var powerTag: (() -> String)?
+    /// " · pwr …" for appending to a census line, or "" when nothing is installed (iOS, tests).
+    static var power: String { powerTag.map { " · " + $0() } ?? "" }
 
     private static let stateLock = NSLock()
     private static var _connectPendingSince: Date?
@@ -471,8 +479,8 @@ class G7BluetoothManager: NSObject {
         if G7TimedConnect.burstAligned, leadAdjusted >= 1 {
             let fireDelay = Int(leadAdjusted.rounded())
             centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: fireDelay)])
-            Self.census(String(format: "timed[system-held]: BURST-ALIGNED request lodged — start delay %d s, so the daemon's 6-s fast scan opens %.0f s before the %@ burst and spans its first ~5 s; nothing on the air until then (anchor %@)",
-                               fireDelay, G7TimedConnect.fastScanLead, Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor)))
+            Self.census(String(format: "timed[system-held]: BURST-ALIGNED request lodged — start delay %d s, so the daemon's 6-s fast scan opens %.0f s before the %@ burst and spans its first ~5 s; nothing on the air until then (anchor %@)%@",
+                               fireDelay, G7TimedConnect.fastScanLead, Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor), G7RadioCensus.power))
         } else if G7TimedConnect.burstAligned {
             // The burst is already here (or seconds away): a delay would land after it.
             centralManager.connect(peripheral, options: nil)
@@ -483,8 +491,8 @@ class G7BluetoothManager: NSObject {
             // start" in the link-up line still measures against the 5-min grid, so a minute-burst
             // connect reads as negative and a missed grid point as +300.
             centralManager.connect(peripheral, options: nil)
-            Self.census(String(format: "timed[system-held]: STANDING request lodged with the daemon (no start delay) — next grid burst %@ (in %d s, anchor %@); the controller connects at the sensor's next advertisement; no withdrawal, the app may sleep",
-                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor)))
+            Self.census(String(format: "timed[system-held]: STANDING request lodged with the daemon (no start delay) — next grid burst %@ (in %d s, anchor %@); the controller connects at the sensor's next advertisement; no withdrawal, the app may sleep%@",
+                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor), G7RadioCensus.power))
         } else {
             centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: wholeSeconds)])
             Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %d s, anchor %@); no withdrawal, the app may sleep",
@@ -1258,7 +1266,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             if G7TimedConnect.systemHeld {
                 timedSystemHeldLodged = false
                 timedSystemHeldRefusals = 0
-                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@", age, timedSleepSummary))
+                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@%@", age, timedSleepSummary, G7RadioCensus.power))
                 managerQueue_startAwakeMarkers()
             }
         }
