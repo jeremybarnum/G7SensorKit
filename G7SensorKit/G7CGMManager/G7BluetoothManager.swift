@@ -229,6 +229,10 @@ class G7BluetoothManager: NSObject {
     /// A failed handshake asked for the retry while its link was still up (AES failure: the sensor
     /// closes ~3 s later). didDisconnect consumes this and schedules the retry from the real close.
     private var timedRetryPending = false
+    /// Set when the direct-auth read on the current link succeeded; the disconnect that follows
+    /// is the sensor's routine close, and the re-lodge can wait for the tail (lodge late).
+    private var directAuthReadDoneOnThisLink = false
+    private var lateLodgeHold: DispatchSemaphore?
     /// When the direct-auth link came up — to measure how long a failed link ran.
     private var directAuthLinkStartedAt: Date?
     /// CUSHION (2026-09-12). The mute-feeding failure needs a request parked past the daemon's 6-s
@@ -1335,6 +1339,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                     // read fine, then the third's pending retry went out into the sensor's tail).
                     self.timedRetryPending = false
                     self.timedRetryUsedThisCycle = true
+                    self.directAuthReadDoneOnThisLink = true
                     self.delegate?.bluetoothManager(self, directAuthDidAuthenticate: m)
                     self.delegate?.bluetoothManager(self, peripheralManager: m, didReceiveControlResponse: Data(egv))
                     Self.census("[direct-auth] INGEST forwarded \(egv.count)-byte EGV to the stock glucose path")
@@ -1392,8 +1397,53 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             return
         }
 
-        if G7TimedConnect.enabled { managerQueue_armTimedConnect(); return }
+        if G7TimedConnect.enabled {
+            // After a SUCCESSFUL read under a standing request, the re-lodge waits out the
+            // sensor's tail instead of going straight back into the accept list.
+            if G7TimedConnect.systemHeld, G7TimedConnect.standing, G7TimedConnect.lodgeLate, directAuthReadDoneOnThisLink {
+                directAuthReadDoneOnThisLink = false
+                managerQueue_scheduleLateStandingLodge()
+                return
+            }
+            managerQueue_armTimedConnect(); return
+        }
         scanAfterDelay()
+    }
+
+    /// Defer the standing re-lodge to `standingLodgeDelay` after link-up, holding the process
+    /// with an expiring activity. Whichever comes first lodges: the planned time, or the system
+    /// ending the hold (its expiration call is the last thing that runs before suspension). The
+    /// log says which, and the "still awake" markers say how far the system let us run.
+    private func managerQueue_scheduleLateStandingLodge() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        let linkUp = directAuthLinkStartedAt ?? Date()
+        let dueAt = linkUp.addingTimeInterval(G7TimedConnect.standingLodgeDelay)
+        let wait = max(0.5, dueAt.timeIntervalSinceNow)
+        Self.census(String(format: "timed[system-held]: re-lodge DEFERRED %.0f s (tail avoidance) — planned at +%.0f s after link-up, or when the system ends the hold", wait, G7TimedConnect.standingLodgeDelay))
+        let hold = DispatchSemaphore(value: 0)
+        lateLodgeHold = hold
+        let lodgeOnce = NSLock(); var lodged = false
+        let lodge: (String) -> Void = { [weak self] why in
+            lodgeOnce.lock(); let first = !lodged; lodged = true; lodgeOnce.unlock()
+            guard first, let self = self else { return }
+            self.managerQueue.async {
+                Self.census(String(format: "timed[system-held]: late re-lodge at +%.1f s after link-up (%@)", Date().timeIntervalSince(linkUp), why))
+                self.lateLodgeHold = nil
+                self.managerQueue_armTimedConnect()
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            ProcessInfo.processInfo.performExpiringActivity(withReason: "G7 standing re-lodge after the sensor's tail") { expired in
+                if expired {
+                    Self.census(String(format: "timed[system-held]: re-lodge hold ENDED by the system at +%.1f s after link-up — lodging now", Date().timeIntervalSince(linkUp)))
+                    lodge("hold ended")
+                    hold.signal()
+                    return
+                }
+                Self.census("timed[system-held]: re-lodge hold GRANTED")
+                if hold.wait(timeout: .now() + wait) == .timedOut { lodge("planned time") }
+            }
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -1649,6 +1699,21 @@ public enum G7TimedConnect {
         if let v = UserDefaults.standard.object(forKey: standingKey) as? Bool { return v }
         return true
     }
+    /// LODGE LATE (2026-09-14, from the 21:54 capture): a standing request re-lodged AT the
+    /// disconnect catches the sensor's post-session tail — 2–3 immediate reconnects the sensor
+    /// drops, then a tail attempt that dies before encryption and COUNTS (reason 762; two in
+    /// 45 min; five in 5.8 h parks the −70 floor = the mute). After a successful read the
+    /// re-lodge is deferred to `standingLodgeDelay` seconds after link-up, held open with an
+    /// expiring activity; if the system ends the hold first, the lodge happens then (a request
+    /// must exist before suspension or nothing wakes us). ON by default.
+    public static let lodgeLateKey = "G7Lab.timedConnect.lodgeLate"
+    public static var lodgeLate: Bool {
+        if let v = UserDefaults.standard.object(forKey: lodgeLateKey) as? Bool { return v }
+        return true
+    }
+    /// The 21:54 capture saw tail attempts at +11 s and +27 s after the burst start; 35 s clears
+    /// both. The sniffer's tail-length distribution replaces this guess.
+    public static let standingLodgeDelay: TimeInterval = 35
     /// The adopted peripheral's CoreBluetooth identifier, remembered so the system-held arm can
     /// re-adopt it at launch without a scan (cleared when the peripheral is forgotten).
     public static let adoptedPeripheralKey = "G7Lab.timedConnect.adoptedPeripheral"
