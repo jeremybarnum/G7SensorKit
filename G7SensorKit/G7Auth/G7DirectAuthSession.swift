@@ -191,7 +191,18 @@ final class G7DirectAuthSession: @unchecked Sendable {
                 }
             }
 
-            let egv = try await readEGV()
+            let egv: [UInt8]
+            do {
+                egv = try await readEGV()
+            } catch {
+                // A fast-path auth the sensor then refuses glucose on must not be repeated
+                // forever: drop the key so the next connection runs the full exchange.
+                if fastDone, let name = sensorName {
+                    G7DirectAuthKeyStore.clear(for: name)
+                    log("[direct-auth] fast path: glucose read failed (\(error)) — stored key cleared, next connection runs the full handshake")
+                }
+                throw error
+            }
 
             // Bank the key for the next connection — only after a read succeeded on it, and only
             // if the Swift AES-8 reproduces the C side's answer under the exported key, so a
