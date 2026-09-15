@@ -503,8 +503,9 @@ class G7BluetoothManager: NSObject {
         } else if G7TimedConnect.burstAligned, leadAdjusted >= 1 {
             let fireDelay = Int(leadAdjusted.rounded())
             centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: fireDelay)])
-            Self.census(String(format: "timed[system-held]: BURST-ALIGNED request lodged — start delay %d s, so the daemon's 6-s fast scan opens %.0f s before the %@ burst and spans its first ~5 s; nothing on the air until then (anchor %@)%@",
-                               fireDelay, G7TimedConnect.fastScanLead, Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor), G7RadioCensus.power))
+            Self.census(String(format: "timed[system-held]: BURST-ALIGNED [Pete's formula: delay = 298 - (now - bg ts)] request lodged — start delay %d s, targeting %@ (bg ts %@ + 298 s), %.0f s before the burst; nothing on the air until then%@",
+                               fireDelay, Self.timedClock.string(from: Date().addingTimeInterval(Double(fireDelay))),
+                               Self.timedClock.string(from: anchor), G7TimedConnect.fastScanLead, G7RadioCensus.power))
         } else if G7TimedConnect.burstAligned {
             // The burst is already here (or seconds away): a delay would land after it.
             centralManager.connect(peripheral, options: nil)
@@ -1785,9 +1786,22 @@ public enum G7TimedConnect {
         if let v = UserDefaults.standard.object(forKey: burstAlignedKey) as? Bool { return v }
         return true
     }
-    /// Start the 6-s fast scan this long before the burst, so it spans the burst's first seconds
-    /// rather than ending as the sensor starts. 1 s → the window covers burst −1…+5 s.
-    public static let fastScanLead: TimeInterval = 1
+    /// Lead before the burst. PETE'S FORMULA (his message, 2026-09-15 11:56): "for the delay, we
+    /// should target a couple seconds before the next expected reading. So delay = 298 - (now -
+    /// bg_timestamp)."
+    ///
+    /// That is arithmetically this code with the lead set to 5: our fire time is the anchor (the
+    /// reading's own sensor timestamp) + period + fireOffset = bg_timestamp + 303, and
+    /// (303 - 5) = 298. Runs before 2026-09-15 15:00 used a lead of 1 (i.e. 302), aiming at the
+    /// advertising start rather than a couple of seconds ahead of the reading; this is his version
+    /// verbatim so the data we hand him is of his formula, not our variant of it.
+    ///
+    /// Expectation on the evidence (14:33 capture): it will not help. The daemon services a
+    /// deferred connect 0.3–269 s late regardless of the delay's length — 8 of 12 short delays were
+    /// 25–269 s late — so aiming 4 s earlier cannot bridge an error measured in minutes. What makes
+    /// a delay work here is MARGIN, not aim. Recorded so the prediction is on the record before the
+    /// run rather than after it.
+    public static let fastScanLead: TimeInterval = 5
     /// TAIL-DELAY LODGE (2026-09-15) — the last untested length of Pete's mechanism.
     ///
     /// Lodge-late keeps the radio off the sensor's tail by holding the app awake for
