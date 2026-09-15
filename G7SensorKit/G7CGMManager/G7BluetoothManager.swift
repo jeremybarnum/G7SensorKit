@@ -49,6 +49,20 @@ public enum G7RadioCensus {
     public static var powerTag: (() -> String)?
     /// " · pwr …" for appending to a census line, or "" when nothing is installed (iOS, tests).
     static var power: String { powerTag.map { " · " + $0() } ?? "" }
+    /// The WATCH's own Bluetooth radio, read from the central we already own — no second
+    /// CBCentralManager, which would open a second bluetoothd app session and disturb the very
+    /// accept-list accounting these runs measure.
+    static func radioName(_ state: CBManagerState) -> String {
+        switch state {
+        case .poweredOn:    return "on"
+        case .poweredOff:   return "OFF"
+        case .unauthorized: return "unauthorized"
+        case .unsupported:  return "unsupported"
+        case .resetting:    return "resetting"
+        case .unknown:      return "?"
+        @unknown default:   return "?"
+        }
+    }
 
     private static let stateLock = NSLock()
     private static var _connectPendingSince: Date?
@@ -492,7 +506,7 @@ class G7BluetoothManager: NSObject {
             // connect reads as negative and a missed grid point as +300.
             centralManager.connect(peripheral, options: nil)
             Self.census(String(format: "timed[system-held]: STANDING request lodged with the daemon (no start delay) — next grid burst %@ (in %d s, anchor %@); the controller connects at the sensor's next advertisement; no withdrawal, the app may sleep%@",
-                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor), G7RadioCensus.power))
+                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor), G7RadioCensus.power + " · watchBT=" + G7RadioCensus.radioName(centralManager.state)))
         } else {
             centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: wholeSeconds)])
             Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %d s, anchor %@); no withdrawal, the app may sleep",
@@ -1266,7 +1280,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             if G7TimedConnect.systemHeld {
                 timedSystemHeldLodged = false
                 timedSystemHeldRefusals = 0
-                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@%@", age, timedSleepSummary, G7RadioCensus.power))
+                Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@ · watchBT=%@%@", age, timedSleepSummary, G7RadioCensus.radioName(centralManager.state), G7RadioCensus.power))
                 managerQueue_startAwakeMarkers()
             }
         }
