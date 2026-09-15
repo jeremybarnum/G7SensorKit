@@ -255,6 +255,9 @@ class G7BluetoothManager: NSObject {
     /// is the sensor's routine close, and the re-lodge can wait for the tail (lodge late).
     private var directAuthReadDoneOnThisLink = false
     private var lateLodgeHold: DispatchSemaphore?
+    /// Set at the disconnect when the tail-delay arm is on: the start delay the next lodge carries,
+    /// sized to reach the same moment the hold would have.
+    private var pendingTailDelay: TimeInterval?
     /// When the direct-auth link came up — to measure how long a failed link ran.
     private var directAuthLinkStartedAt: Date?
     /// CUSHION (2026-09-12). The mute-feeding failure needs a request parked past the daemon's 6-s
@@ -490,7 +493,14 @@ class G7BluetoothManager: NSObject {
         // connection scan on the burst. Nothing is on the air until then, so the sensor's tail is
         // never touched. Whole seconds only — a fractional NSNumber is refused with CBError 1.
         let leadAdjusted = delay - G7TimedConnect.fastScanLead
-        if G7TimedConnect.burstAligned, leadAdjusted >= 1 {
+        if let tail = pendingTailDelay {
+            pendingTailDelay = nil
+            let fireDelay = Int(tail.rounded())
+            centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: fireDelay)])
+            Self.census(String(format: "timed[system-held]: TAIL-DELAY request lodged — start delay %d s (the hold's +%.0f s after link-up, handed to the daemon); the app may suspend now · next grid burst %@%@",
+                               fireDelay, G7TimedConnect.standingLodgeDelay, Self.timedClock.string(from: fireAt),
+                               G7RadioCensus.power + " · watchBT=" + G7RadioCensus.radioName(centralManager.state)))
+        } else if G7TimedConnect.burstAligned, leadAdjusted >= 1 {
             let fireDelay = Int(leadAdjusted.rounded())
             centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: fireDelay)])
             Self.census(String(format: "timed[system-held]: BURST-ALIGNED request lodged — start delay %d s, so the daemon's 6-s fast scan opens %.0f s before the %@ burst and spans its first ~5 s; nothing on the air until then (anchor %@)%@",
@@ -1440,8 +1450,14 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             if G7TimedConnect.systemHeld, G7TimedConnect.standing, G7TimedConnect.lodgeLate,
                !G7TimedConnect.burstAligned, directAuthReadDoneOnThisLink {
                 directAuthReadDoneOnThisLink = false
-                managerQueue_scheduleLateStandingLodge()
-                return
+                if G7TimedConnect.tailDelayLodge {
+                    // Same target moment as the hold, on the daemon's clock instead of ours.
+                    let sinceLinkUp = directAuthLinkStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+                    pendingTailDelay = max(1, G7TimedConnect.standingLodgeDelay - sinceLinkUp)
+                } else {
+                    managerQueue_scheduleLateStandingLodge()
+                    return
+                }
             }
             managerQueue_armTimedConnect(); return
         }
@@ -1772,6 +1788,22 @@ public enum G7TimedConnect {
     /// Start the 6-s fast scan this long before the burst, so it spans the burst's first seconds
     /// rather than ending as the sensor starts. 1 s → the window covers burst −1…+5 s.
     public static let fastScanLead: TimeInterval = 1
+    /// TAIL-DELAY LODGE (2026-09-15) — the last untested length of Pete's mechanism.
+    ///
+    /// Lodge-late keeps the radio off the sensor's tail by holding the app awake for
+    /// `standingLodgeDelay` and then lodging a plain connect. That works (33/33 bursts, zero
+    /// reason-762) but costs 35 s of held runtime per cycle. This arm does the same thing on the
+    /// daemon's clock: lodge IMMEDIATELY at the disconnect with a start delay sized to reach the
+    /// same moment, then let the app suspend as usual at ~13 s.
+    ///
+    /// Worth testing even though the delay has failed everywhere else: every failure so far was a
+    /// LONG delay (87 s missed; 291/293 s missed; 54–295 s fired 5–65 min late), and the one
+    /// on-time firing (41 s, +0.5 s) had the app awake. ~31 s is the only length that might expire
+    /// before the host settles into sleep. If it fires on time the accept-list entry lands 4.5 min
+    /// before the next burst and Pete's executor replaces our hold outright; if it is late like the
+    /// rest, the curve is characterised and the deviation is closed. Default OFF — a measurement.
+    public static let tailDelayLodgeKey = "G7Lab.timedConnect.tailDelayLodge"
+    public static var tailDelayLodge: Bool { UserDefaults.standard.bool(forKey: tailDelayLodgeKey) }
     /// The adopted peripheral's CoreBluetooth identifier, remembered so the system-held arm can
     /// re-adopt it at launch without a scan (cleared when the peripheral is forgotten).
     public static let adoptedPeripheralKey = "G7Lab.timedConnect.adoptedPeripheral"
