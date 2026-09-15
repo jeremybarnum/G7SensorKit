@@ -464,7 +464,20 @@ class G7BluetoothManager: NSObject {
         // seconds"; an integer is the one remaining form worth trying before the option is
         // declared unavailable on the watch.
         let wholeSeconds = Int(delay.rounded(.up))
-        if G7TimedConnect.standing {
+        // BURST-ALIGNED: hand the daemon a whole-second start delay that lands its 6-s fast
+        // connection scan on the burst. Nothing is on the air until then, so the sensor's tail is
+        // never touched. Whole seconds only — a fractional NSNumber is refused with CBError 1.
+        let leadAdjusted = delay - G7TimedConnect.fastScanLead
+        if G7TimedConnect.burstAligned, leadAdjusted >= 1 {
+            let fireDelay = Int(leadAdjusted.rounded())
+            centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: fireDelay)])
+            Self.census(String(format: "timed[system-held]: BURST-ALIGNED request lodged — start delay %d s, so the daemon's 6-s fast scan opens %.0f s before the %@ burst and spans its first ~5 s; nothing on the air until then (anchor %@)",
+                               fireDelay, G7TimedConnect.fastScanLead, Self.timedClock.string(from: fireAt), Self.timedClock.string(from: anchor)))
+        } else if G7TimedConnect.burstAligned {
+            // The burst is already here (or seconds away): a delay would land after it.
+            centralManager.connect(peripheral, options: nil)
+            Self.census(String(format: "timed[system-held]: BURST-ALIGNED — burst %@ is %.1f s away, lodging immediately instead of delaying", Self.timedClock.string(from: fireAt), delay))
+        } else if G7TimedConnect.standing {
             // No delay: the address goes into the accept list now and the controller connects at
             // the sensor's next advertisement, whichever burst that is. "after the scheduled
             // start" in the link-up line still measures against the 5-min grid, so a minute-burst
@@ -1400,7 +1413,10 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         if G7TimedConnect.enabled {
             // After a SUCCESSFUL read under a standing request, the re-lodge waits out the
             // sensor's tail instead of going straight back into the accept list.
-            if G7TimedConnect.systemHeld, G7TimedConnect.standing, G7TimedConnect.lodgeLate, directAuthReadDoneOnThisLink {
+            // Burst-aligned lodging needs no tail deferral: the start delay already keeps the
+            // radio off the sensor until the next burst, so lodge now while we still have runtime.
+            if G7TimedConnect.systemHeld, G7TimedConnect.standing, G7TimedConnect.lodgeLate,
+               !G7TimedConnect.burstAligned, directAuthReadDoneOnThisLink {
                 directAuthReadDoneOnThisLink = false
                 managerQueue_scheduleLateStandingLodge()
                 return
@@ -1714,6 +1730,26 @@ public enum G7TimedConnect {
     /// The 21:54 capture saw tail attempts at +11 s and +27 s after the burst start; 35 s clears
     /// both. The sniffer's tail-length distribution replaces this guess.
     public static let standingLodgeDelay: TimeInterval = 35
+    /// BURST-ALIGNED (2026-09-14, from the 23:06 capture): bluetoothd hunts an accept-list entry
+    /// aggressively for SIX SECONDS after each connect call — "Arming Fast connection scan Timer
+    /// with interval 5.994 s", `LeConnectionScanHigh` — and then drops to `LeConnectionScanLow`
+    /// (30 ms per 300 ms, sometimes 12.5 ms, sometimes none). A standing request therefore catches
+    /// a burst only by luck once those 6 s are spent: catch latencies ranged +0.2…+961 s and one
+    /// stretch missed three bursts in a row. `CBConnectPeripheralOptionStartDelayKey` defers BOTH
+    /// the accept-list add and that 6-s scan (verified 19:16:17: "delayed connection (276 seconds)
+    /// passed" → accept-list add → "Arming Fast connection scan Timer"), so a delay timed to the
+    /// next burst puts the high-power window ON the burst AND keeps the radio off the sensor's
+    /// tail — the tail attempts that counted five reason-762s and parked the −70 floor at
+    /// 22:54:39. This is Pete's suggestion used for what it is actually good at. ON by default
+    /// under the arm; OFF falls back to the bare standing request plus the late re-lodge.
+    public static let burstAlignedKey = "G7Lab.timedConnect.burstAligned"
+    public static var burstAligned: Bool {
+        if let v = UserDefaults.standard.object(forKey: burstAlignedKey) as? Bool { return v }
+        return true
+    }
+    /// Start the 6-s fast scan this long before the burst, so it spans the burst's first seconds
+    /// rather than ending as the sensor starts. 1 s → the window covers burst −1…+5 s.
+    public static let fastScanLead: TimeInterval = 1
     /// The adopted peripheral's CoreBluetooth identifier, remembered so the system-held arm can
     /// re-adopt it at launch without a scan (cleared when the peripheral is forgotten).
     public static let adoptedPeripheralKey = "G7Lab.timedConnect.adoptedPeripheral"
