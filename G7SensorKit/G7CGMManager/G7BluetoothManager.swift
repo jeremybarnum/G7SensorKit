@@ -432,6 +432,13 @@ class G7BluetoothManager: NSObject {
             return
         }
         if peripheral.state == .connected { Self.census("timed[system-held]: already connected — the next request is lodged at close"); return }
+        if peripheral.state == .disconnecting {
+            // A connect issued while a cancel is still in flight can be lost inside CoreBluetooth
+            // (2026-09-14 21:12:12: lodged 1 ms after a bounded cancel, no connect at 21:16:38).
+            // didDisconnect re-arms from the real close.
+            Self.census("timed[system-held]: link still closing — the lodge waits for the close callback")
+            return
+        }
         if timedSystemHeldLodged { Self.census("timed[system-held]: a request is already lodged — keeping it"); return }
         if let pm = activePeripheralManager { pm.peripheral = peripheral } else {
             activePeripheralManager = G7PeripheralManager(peripheral: peripheral, configuration: .dexcomG7, centralManager: centralManager)
@@ -504,8 +511,38 @@ class G7BluetoothManager: NSObject {
         if let s = timedLastSleep, now.timeIntervalSince(s.until) < 3 {
             return String(format: "app SLEPT %.0f s and resumed %.1f s before this callback · %@", s.seconds, now.timeIntervalSince(s.until), pid)
         }
-        if let tick = timedAwakeTick { return String(format: "app awake (last tick %.1f s ago) · %@", now.timeIntervalSince(tick), pid) }
+        if let tick = timedAwakeTick {
+            // A 2-s tick more than 4 s stale means the process was not running: the callback
+            // beat the coalesced tick on resume (2026-09-14 21:26:50: "awake (last tick 85 s
+            // ago)" after a snapshot resume at 21:25:25 and a suspension in between).
+            let ago = now.timeIntervalSince(tick)
+            if ago > 4 { return String(format: "app was NOT running for at least %.0f s before this callback (tick stale) · %@", ago, pid) }
+            return String(format: "app awake (last tick %.1f s ago) · %@", ago, pid)
+        }
         return "app never ticked in this launch (relaunched for it) · \(pid)"
+    }
+
+    /// Runtime after a system-held wake, measured from inside: one line at +5, +10, +15, +20 and
+    /// +30 s after link-up. The last one that appears is the floor of what the system gave us;
+    /// the first one missing is when it suspended us (no callback marks that moment — the alert
+    /// task's expiration handler never ran before a suspension on 2026-09-14).
+    private var timedAwakeMarkers: [DispatchSourceTimer] = []
+    private func managerQueue_startAwakeMarkers() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+        timedAwakeMarkers.forEach { $0.cancel() }
+        timedAwakeMarkers = []
+        let linkUp = Date()
+        let pid = ProcessInfo.processInfo.processIdentifier
+        for offset in [5.0, 10.0, 15.0, 20.0, 30.0] {
+            let t = DispatchSource.makeTimerSource(queue: managerQueue)
+            t.schedule(deadline: .now() + offset)
+            t.setEventHandler {
+                let late = Date().timeIntervalSince(linkUp) - offset
+                Self.census(String(format: "timed[system-held]: still awake +%.0f s after link-up%@ · pid %d", offset, late > 2 ? String(format: " (fired %.0f s late — the app slept in between)", late) : "", pid))
+            }
+            t.resume()
+            timedAwakeMarkers.append(t)
+        }
     }
 
     private func managerQueue_timedFire(scheduled: Date, ask: TimedAsk = .grid) {
@@ -568,6 +605,14 @@ class G7BluetoothManager: NSObject {
     private func managerQueue_timedRequestRetry(peripheral: CBPeripheral) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled, !timedRetryUsedThisCycle else { return }
+        // Under a STANDING request the lodged connect reconnects by itself the moment the sensor
+        // closes (21:11:43 on 2026-09-14: 0.7 s after the drop). A same-burst retry on top of it
+        // is a second request, and its bounded cancel raced the next lodge and lost a burst.
+        if G7TimedConnect.systemHeld, G7TimedConnect.standing {
+            Self.census("timed: direct-auth failed — no same-burst retry under a standing request; the lodged request reconnects on its own at the close")
+            if peripheral.state != .connected, peripheral.state != .connecting { managerQueue_armTimedConnect() }
+            return
+        }
         if peripheral.state == .connected || peripheral.state == .connecting {
             timedRetryPending = true
             Self.census("timed: direct-auth failed with the link still up — retry PENDING until the sensor closes")
@@ -582,6 +627,11 @@ class G7BluetoothManager: NSObject {
     private func managerQueue_scheduleTimedRetry(closeAt: Date) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard G7TimedConnect.enabled, !timedRetryUsedThisCycle else { return }
+        if G7TimedConnect.systemHeld, G7TimedConnect.standing {
+            Self.census("timed: retry not scheduled under a standing request — lodging instead")
+            managerQueue_armTimedConnect()
+            return
+        }
         let linkRan = directAuthLinkStartedAt.map { closeAt.timeIntervalSince($0) } ?? 0
         guard linkRan <= Self.timedRetryLinkCap else {
             Self.census(String(format: "timed: retry SKIPPED — failed link ran %.1f s (> %.0f s cap): sensor deep in its cycle, waiting for the grid", linkRan, Self.timedRetryLinkCap))
@@ -1192,6 +1242,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 timedSystemHeldLodged = false
                 timedSystemHeldRefusals = 0
                 Self.census(String(format: "timed[system-held]: link up %+.1f s after the scheduled start · %@", age, timedSleepSummary))
+                managerQueue_startAwakeMarkers()
             }
         }
 
@@ -1279,6 +1330,11 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                 }
                 guard let egv = r.egvRaw else { return }
                 self.managerQueue.async {
+                    // A success settles the cycle: an earlier failure on this burst must not leave
+                    // a retry pending for the close (2026-09-14 21:12:06: the fourth connection
+                    // read fine, then the third's pending retry went out into the sensor's tail).
+                    self.timedRetryPending = false
+                    self.timedRetryUsedThisCycle = true
                     self.delegate?.bluetoothManager(self, directAuthDidAuthenticate: m)
                     self.delegate?.bluetoothManager(self, peripheralManager: m, didReceiveControlResponse: Data(egv))
                     Self.census("[direct-auth] INGEST forwarded \(egv.count)-byte EGV to the stock glucose path")

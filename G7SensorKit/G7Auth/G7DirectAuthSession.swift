@@ -235,14 +235,21 @@ final class G7DirectAuthSession: @unchecked Sendable {
     // J-PAKE — for w in 0,1,2: write [0x0A,w] to auth, recv 160 on data, feed it, send our 160.
     private func doJPake() async throws {
         for w in Int32(0)...Int32(2) {
+            // Per-round timing (2026-09-14 21:11: three attempts in one burst were dropped by the
+            // sensor ~3.5 s after the last round it answered; which leg was slow was invisible).
+            let t0 = Date()
             try await write(authChar, [0x0A, UInt8(w)], response: true)
+            let tAsk = Date()
             let sensor160 = try await dataStream.recv(160, timeout: recvTimeout)
+            let tGot = Date()
             let ok = G7AuthCrypto.putPubkey(w, sensor160)
-            log("[direct-auth] round\(w) putk=\(ok)")
             let ours: [UInt8]
             if w < 2 { ours = G7AuthCrypto.round12(w) }
             else { guard let r3 = G7AuthCrypto.round3() else { throw G7DirectAuthError.cryptoFailed("g7_round3") }; ours = r3 }
             try await writeDataChunks(ours)
+            let tSent = Date()
+            log(String(format: "[direct-auth] round%d putk=%@ · ask acked %.0f ms · sensor 160 B +%.0f ms · ours sent +%.0f ms", w, ok ? "true" : "false",
+                       tAsk.timeIntervalSince(t0) * 1000, tGot.timeIntervalSince(tAsk) * 1000, tSent.timeIntervalSince(tGot) * 1000))
         }
     }
 
