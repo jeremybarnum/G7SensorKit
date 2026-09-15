@@ -453,9 +453,19 @@ class G7BluetoothManager: NSObject {
         // seconds"; an integer is the one remaining form worth trying before the option is
         // declared unavailable on the watch.
         let wholeSeconds = Int(delay.rounded(.up))
-        centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: wholeSeconds)])
-        Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %d s, anchor %@); no withdrawal, the app may sleep",
-                           Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor)))
+        if G7TimedConnect.standing {
+            // No delay: the address goes into the accept list now and the controller connects at
+            // the sensor's next advertisement, whichever burst that is. "after the scheduled
+            // start" in the link-up line still measures against the 5-min grid, so a minute-burst
+            // connect reads as negative and a missed grid point as +300.
+            centralManager.connect(peripheral, options: nil)
+            Self.census(String(format: "timed[system-held]: STANDING request lodged with the daemon (no start delay) — next grid burst %@ (in %d s, anchor %@); the controller connects at the sensor's next advertisement; no withdrawal, the app may sleep",
+                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor)))
+        } else {
+            centralManager.connect(peripheral, options: [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: wholeSeconds)])
+            Self.census(String(format: "timed[system-held]: request LODGED with the daemon — starts %@ (in %d s, anchor %@); no withdrawal, the app may sleep",
+                               Self.timedClock.string(from: fireAt), wholeSeconds, Self.timedClock.string(from: anchor)))
+        }
         // No bound, by the model under test (Pete, 2026-09-14): the delay is what keeps the
         // request off the air through the sensitive period after our own disconnect, and once
         // it passes the request stands until the system connects it. A missed burst therefore
@@ -1228,7 +1238,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             G7DirectAuth.needsCodeFor = nil
             let session = G7DirectAuthSession(peripheralManager: m, authChar: auth, dataChar: data,
                                               ctrlChar: ctrl, pin4: pin, slotByte: G7DirectAuth.slotByte,
-                                              log: { Self.census($0) })
+                                              sensorName: peripheral.name, log: { Self.census($0) })
             self.directAuthSession = session
             self.directAuthLinkStartedAt = Date()
             Self.census("[direct-auth] starting handshake (\(pin.count)-digit pin, slot 0x\(String(format: "%02x", G7DirectAuth.slotByte)))")
@@ -1475,6 +1485,15 @@ public enum G7DirectAuth {
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.directAuth.needsCode"
     public static let slotByte: UInt8 = 0x01   // concurrent slot, proven to coexist with a phone (auth=1)
+    /// FAST PATH (2026-09-14): after one full handshake per sensor the derived shared key is
+    /// stored and later connections replay only the AES challenge (no J-PAKE, no certificate
+    /// exchange) — Juggluco's once-per-bond behaviour; ~1.2 s instead of 7.0. ON by default;
+    /// the key is the diagnostic kill switch. A rejected challenge clears the stored key.
+    public static let fastPathKey = "G7Lab.directAuth.fastPath"
+    public static var fastPath: Bool {
+        if let v = UserDefaults.standard.object(forKey: fastPathKey) as? Bool { return v }
+        return true
+    }
     /// WATCH: ON by default since 2026-09-13 — the watch reads the sensor with its own handshake
     /// (no Dexcom watch app). PHONE: OFF — the phone keeps stock acquisition. The key remains a
     /// diagnostic override on the watch's diagnostics screen.
@@ -1560,6 +1579,20 @@ public enum G7TimedConnect {
     /// once, so flipping it needs an app relaunch.
     public static let systemHeldKey = "G7Lab.timedConnect.systemHeld"
     public static var systemHeld: Bool { UserDefaults.standard.bool(forKey: systemHeldKey) }
+    /// STANDING request (2026-09-14): under the arm, lodge the connect with NO start delay, so the
+    /// sensor's address sits in the controller's accept list from the moment of our disconnect
+    /// and the radio connects at the sensor's very next advertisement. The delayed form depends
+    /// on a timer inside bluetoothd that the event run showed is only checked when the daemon's
+    /// scan manager re-evaluates for some other client — 5–20 min late with the app asleep. The
+    /// price is the one the timed design was built to avoid: a request standing through the
+    /// sensor's tail can fail at low RSSI and count toward the daemon's per-device tally. That
+    /// risk is accepted for this arm (Jeremy, 2026-09-14) and measured. ON by default under the
+    /// arm; OFF restores the start-delay form.
+    public static let standingKey = "G7Lab.timedConnect.standing"
+    public static var standing: Bool {
+        if let v = UserDefaults.standard.object(forKey: standingKey) as? Bool { return v }
+        return true
+    }
     /// The adopted peripheral's CoreBluetooth identifier, remembered so the system-held arm can
     /// re-adopt it at launch without a scan (cleared when the peripheral is forgotten).
     public static let adoptedPeripheralKey = "G7Lab.timedConnect.adoptedPeripheral"

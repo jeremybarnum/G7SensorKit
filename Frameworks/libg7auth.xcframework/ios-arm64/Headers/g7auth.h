@@ -29,6 +29,13 @@ int g7_challenge(const uint8_t* data, int len, uint8_t* out64);
    Used for the AES challenge/response after the shared key is established. Returns 1. */
 int g7_aes8(const uint8_t* data, uint8_t* out8);
 
+/* Copy the 16-byte shared key derived by the last completed J-PAKE (round 3) into out16.
+   Exported by the shipped library since the first build (g7auth.cpp: g7_shared); declared
+   here 2026-09-14 for the once-per-bond fast path — later connections replay the AES
+   challenge under this key and skip J-PAKE and the certificate exchange, as Juggluco does.
+   Returns 1. All zeros if no J-PAKE has completed in this process. */
+int g7_shared(uint8_t* out16);
+
 #ifdef __cplusplus
 }
 #endif

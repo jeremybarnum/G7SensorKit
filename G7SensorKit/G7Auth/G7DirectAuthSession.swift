@@ -42,6 +42,10 @@ final class G7DirectAuthSession: @unchecked Sendable {
     private let pin4: [UInt8]
     private let slotByte: UInt8
     private let log: (String) -> Void
+    /// The sensor's advertised name (DXCM…), the key under which its shared key is stored.
+    private let sensorName: String?
+    /// Set when this run authenticated from a stored key (no J-PAKE, no certificates).
+    private(set) var usedFastPath = false
 
     private let authStream = G7DAMessageStream(label: "g7da.auth", name: "auth")
     private let dataStream = G7DAByteStream(label: "g7da.data")
@@ -57,10 +61,10 @@ final class G7DirectAuthSession: @unchecked Sendable {
 
     init(peripheralManager: G7PeripheralManager,
          authChar: CBCharacteristic, dataChar: CBCharacteristic, ctrlChar: CBCharacteristic,
-         pin4: [UInt8], slotByte: UInt8 = 0x01, log: @escaping (String) -> Void) {
+         pin4: [UInt8], slotByte: UInt8 = 0x01, sensorName: String? = nil, log: @escaping (String) -> Void) {
         self.pm = peripheralManager
         self.authChar = authChar; self.dataChar = dataChar; self.ctrlChar = ctrlChar
-        self.pin4 = pin4; self.slotByte = slotByte; self.log = log
+        self.pin4 = pin4; self.slotByte = slotByte; self.sensorName = sensorName; self.log = log
         authStream.onSkip = { log("[direct-auth] \($0)") }
         ctrlStream.onSkip = { log("[direct-auth] \($0)") }
     }
@@ -147,24 +151,62 @@ final class G7DirectAuthSession: @unchecked Sendable {
             try await setNotify(authChar)
             log("[direct-auth] subscribed 3538 notify, 3535 indicate")
 
-            try await doJPake()
-            log("[direct-auth] J-PAKE complete")
+            // FAST PATH (2026-09-14, from Juggluco's DexGattCallback: J-PAKE and the certificate
+            // exchange are once per bond; a later connection replays the AES challenge under the
+            // stored shared key and reads). 7.0 s → ~1.2 s. A mismatch clears the key and the
+            // full handshake runs on this same link.
+            var fastDone = false
+            if G7DirectAuth.fastPath, let name = sensorName, let stored = G7DirectAuthKeyStore.load(for: name) {
+                let started = Date()
+                log("[direct-auth] FAST PATH — stored key for \(name): AES challenge only, no J-PAKE, no certs")
+                do {
+                    let (a, b) = try await doAesAuth { G7AuthCrypto.aes8($0, key: stored) }
+                    log(String(format: "[direct-auth] *** statusReply auth=%d bond=%d *** (fast path, %.2f s)", a, b, Date().timeIntervalSince(started)))
+                    guard a == 1 || a == 2 else { throw G7DirectAuthError.unexpectedAuth(a) }
+                    result.authByte = a; result.bondByte = b
+                    fastDone = true
+                    usedFastPath = true
+                } catch {
+                    G7DirectAuthKeyStore.clear(for: name)
+                    log("[direct-auth] fast path REJECTED (\(error)) — stored key cleared, full handshake on this link")
+                }
+            }
 
-            let (a, b) = try await doAesAuth()
-            result.authByte = a; result.bondByte = b
-            log("[direct-auth] *** statusReply auth=\(a) bond=\(b) ***")
-            guard a == 1 || a == 2 else { throw G7DirectAuthError.unexpectedAuth(a) }
+            if !fastDone {
+                try await doJPake()
+                log("[direct-auth] J-PAKE complete")
 
-            do {
-                try await doCerts()
-                try await write(authChar, [0x06, 0x19], response: true)
-                let gate = try await authStream.recv(op: 0x06, timeout: recvTimeout)
-                log("[direct-auth] *** BOND-READY gate \(g7authHex(gate)) (bond=\(b)) ***")
-            } catch {
-                log("[direct-auth] cert/gate step: \(error) — proceeding to glucose")
+                let (a, b) = try await doAesAuth()
+                result.authByte = a; result.bondByte = b
+                log("[direct-auth] *** statusReply auth=\(a) bond=\(b) ***")
+                guard a == 1 || a == 2 else { throw G7DirectAuthError.unexpectedAuth(a) }
+
+                do {
+                    try await doCerts()
+                    try await write(authChar, [0x06, 0x19], response: true)
+                    let gate = try await authStream.recv(op: 0x06, timeout: recvTimeout)
+                    log("[direct-auth] *** BOND-READY gate \(g7authHex(gate)) (bond=\(b)) ***")
+                } catch {
+                    log("[direct-auth] cert/gate step: \(error) — proceeding to glucose")
+                }
             }
 
             let egv = try await readEGV()
+
+            // Bank the key for the next connection — only after a read succeeded on it, and only
+            // if the Swift AES-8 reproduces the C side's answer under the exported key, so a
+            // stored key can never be one the sensor would refuse for our own arithmetic.
+            if !fastDone, let name = sensorName {
+                let key = G7AuthCrypto.sharedKey()
+                let swift = G7AuthCrypto.aes8(G7AuthCrypto.RAND8, key: key)
+                let c = G7AuthCrypto.aes8(G7AuthCrypto.RAND8)
+                if key.contains(where: { $0 != 0 }), swift == c {
+                    G7DirectAuthKeyStore.save(key, for: name)
+                    log("[direct-auth] shared key STORED for \(name) (Swift AES-8 == C AES-8) — next connection takes the fast path")
+                } else {
+                    log("[direct-auth] shared key NOT stored for \(name): \(key.contains(where: { $0 != 0 }) ? "Swift AES-8 != C AES-8" : "key is all zeros")")
+                }
+            }
             result.egvRaw = egv
             let rawEGV: Int = egv.count >= 14 ? Int(egv[12]) | (Int(egv[13]) << 8) : 0xffff
             result.glucose = rawEGV == 0xffff ? nil : (rawEGV & 0x0fff)
@@ -194,12 +236,14 @@ final class G7DirectAuthSession: @unchecked Sendable {
     }
 
     // AES auth: [0x02]+RAND8+[slot]; recv [0x03]+X8+Y8; verify aes8(RAND8)==X8; [0x04]+aes8(Y8); recv [0x05,auth,bond].
-    private func doAesAuth() async throws -> (Int, Int) {
+    /// `aes` is the AES-8 to use: the C side's (under the key J-PAKE just derived) by default,
+    /// or the Swift one under a stored key on the fast path.
+    private func doAesAuth(aes: ([UInt8]) -> [UInt8] = { G7AuthCrypto.aes8($0) }) async throws -> (Int, Int) {
         try await write(authChar, [0x02] + G7AuthCrypto.RAND8 + [slotByte], response: true)
         let resp = try await authStream.recv(op: 0x03, timeout: recvTimeout)
         let x8 = Array(resp[1..<9]); let y8 = Array(resp[9..<17])
-        guard G7AuthCrypto.aes8(G7AuthCrypto.RAND8) == x8 else { throw G7DirectAuthError.aesVerifyFailed }
-        try await write(authChar, [0x04] + G7AuthCrypto.aes8(y8), response: true)
+        guard aes(G7AuthCrypto.RAND8) == x8 else { throw G7DirectAuthError.aesVerifyFailed }
+        try await write(authChar, [0x04] + aes(y8), response: true)
         let st = try await authStream.recv(op: 0x05, timeout: recvTimeout)
         return (Int(st[1]), Int(st[2]))
     }
