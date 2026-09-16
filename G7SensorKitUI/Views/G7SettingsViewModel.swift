@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import WatchConnectivity
 import G7SensorKit
 import LoopKit
 import LoopKitUI
@@ -102,8 +103,15 @@ class G7SettingsViewModel: ObservableObject {
         return ok
     }
 
-    /// The watch pairing-code section is offered only when the host app says the watch feature is present.
-    var showsWatchDirectRead: Bool { G7DirectAuth.phoneEntryVisible?() ?? false }
+    /// The watch pairing-code section is offered only when a paired watch has the companion app
+    /// installed (or the host app says so through G7DirectAuth.phoneEntryVisible); a phone without
+    /// the watch app sees exactly the stock screen.
+    var showsWatchDirectRead: Bool {
+        if let hook = G7DirectAuth.phoneEntryVisible { return hook() }
+        guard WCSession.isSupported() else { return false }
+        let session = WCSession.default
+        return session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
+    }
 
     /// Settings-row text for the pairing-code state.
     var directAuthCodeStatusText: String {
