@@ -7,10 +7,6 @@
 
 #import <Foundation/Foundation.h>
 
-#import <TargetConditionals.h>
-#if TARGET_OS_WATCH
-#import <G7SensorKit/g7auth.h>   // direct auth (own J-PAKE) is compiled into the watch target only
-#endif
 
 //! Project version number for G7SensorKit.
 

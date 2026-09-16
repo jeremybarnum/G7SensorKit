@@ -5,6 +5,10 @@
 //  Created by Pete Schwamb on 11/11/22.
 //  Copyright © 2022 LoopKit Authors. All rights reserved.
 //
+//  Active-peripheral tracking, the powered-on recheck and central recreation
+//  are derived from DexKit by Erik Tolboom
+//  (https://github.com/nightscout/DexKit).
+//
 
 import CoreBluetooth
 import Foundation
@@ -47,7 +51,17 @@ protocol G7BluetoothManagerDelegate: AnyObject {
 
      - returns: PeripheralConnectionCommand indicating what should be done with this peripheral
      */
-    func bluetoothManager(_ manager: G7BluetoothManager, shouldConnectPeripheral peripheral: CBPeripheral) -> PeripheralConnectionCommand
+    func bluetoothManager(_ manager: G7BluetoothManager, shouldConnectPeripheral peripheral: CBPeripheral, advertisementData: [String: Any]) -> PeripheralConnectionCommand
+
+    /**
+     Asks the delegate whether peripherals restored by CoreBluetooth's state
+     restoration should be adopted.
+
+     A session says yes: that is how it resumes its own sensor after a relaunch.
+     A pairing run says no, because a stale restored peripheral would be treated
+     as a candidate and crowd out the sensor actually being paired.
+     */
+    func bluetoothManagerShouldAcceptRestoredPeripherals(_ manager: G7BluetoothManager) -> Bool
 
     /// Informs the delegate that the bluetooth manager received new data in the control characteristic
     ///
@@ -85,22 +99,22 @@ protocol G7BluetoothManagerDelegate: AnyObject {
     func peripheralDidDisconnect(_ manager: G7BluetoothManager, peripheralManager: G7PeripheralManager, wasRemoteDisconnect: Bool)
 
 #if os(watchOS)
-    /// Our own J-PAKE handshake (G7DirectAuthSession) authenticated the link. The stock auth
-    /// observer never sees that exchange, so this clears its pending-auth state before the
-    /// sensor's routine hang-up would otherwise be misread as end-of-session.
-    func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager)
-
     /// One line from the watch acquisition arm for the host's device log (Pete's
     /// omnipodLogDeviceEvent shape): os_log alone never reaches the wrist's file log.
     func bluetoothManager(_ manager: G7BluetoothManager, logEvent line: String)
+
+    /// Whether a connection could be authenticated once it is up: in direct mode, a pairing code
+    /// or a stored key for the sensor; while eavesdropping, always. The arm does not lodge a
+    /// request it could only watch fail.
+    func bluetoothManagerCanAuthenticate(_ manager: G7BluetoothManager) -> Bool
 #endif
 }
 
 #if os(watchOS)
 extension G7BluetoothManagerDelegate {
-    /// Optional: only the stock sensor observer needs to react to a direct-auth success.
-    func bluetoothManager(_ manager: G7BluetoothManager, directAuthDidAuthenticate peripheralManager: G7PeripheralManager) {}
+    /// Optional: only the watch produces these.
     func bluetoothManager(_ manager: G7BluetoothManager, logEvent line: String) {}
+    func bluetoothManagerCanAuthenticate(_ manager: G7BluetoothManager) -> Bool { true }
 }
 #endif
 
@@ -112,6 +126,13 @@ class G7BluetoothManager: NSObject {
 
     /// Isolated to `managerQueue`
     private var centralManager: CBCentralManager! = nil
+
+    /// Whether the radio is usable: off, unauthorized, or on. Readable from
+    /// any queue; changes are announced through
+    /// `bluetoothManagerScanningStatusDidChange`.
+    var centralState: CBManagerState {
+        centralManager?.state ?? .unknown
+    }
 
     /// Isolated to `managerQueue`
     private var activePeripheral: CBPeripheral? {
@@ -127,7 +148,6 @@ class G7BluetoothManager: NSObject {
     // MARK: - Watch acquisition state — managerQueue only (the arm is the extension at the end of this file)
 
     /// The in-flight handshake; nil between links.
-    private var auth: G7AuthProvider?
     /// didConnect stamp; the tail clearance counts from here.
     private var linkUpAt: Date?
     /// Exactly one daemon-held request in flight.
@@ -161,6 +181,13 @@ class G7BluetoothManager: NSObject {
     }
     private let lockedPeripheralIdentifier: Locked<UUID?> = Locked(nil)
 
+    /// Targets a known peripheral directly, so a relaunch can retrieve it by
+    /// identifier instead of waiting for its next advertisement. Passing nil
+    /// reopens the search to any sensor in range.
+    func setActivePeripheralIdentifier(_ identifier: UUID?) {
+        lockedPeripheralIdentifier.value = identifier
+    }
+
     /// Isolated to `managerQueue`
     private var activePeripheralManager: G7PeripheralManager? {
         didSet {
@@ -176,6 +203,24 @@ class G7BluetoothManager: NSObject {
 
     private let managerQueue = DispatchQueue(label: "com.loudnate.CGMBLEKit.bluetoothManagerQueue", qos: .unspecified)
 
+    /// Whether a `.poweredOn` recheck is already pending. Confined to `managerQueue`.
+    private var poweredOnRecheckScheduled = false
+
+    /// Consecutive rechecks that still saw a non-`.poweredOn` state, and how
+    /// often we have rebuilt the central because of it. Confined to `managerQueue`.
+    private var poweredOnRecheckCount = 0
+    private var centralRecreationCount = 0
+
+    /// How long to tolerate a stuck state before rebuilding the central.
+    private static let poweredOnRecheckInterval: TimeInterval = 3
+    private static let poweredOnRechecksBeforeRecreating = 10
+    private static let maximumCentralRecreations = 5
+
+    /// There is exactly one of these per session, and a pairing run borrows
+    /// it rather than building a second: only one central per app may claim
+    /// the restore identifier, and sharing the central is what lets the
+    /// session adopt the connection pairing just authenticated instead of
+    /// dropping it and waiting for the sensor's next advertisement.
     override init() {
         super.init()
 
@@ -263,7 +308,7 @@ class G7BluetoothManager: NSObject {
         }
     }
 
-    /// The phone reported a NEW sensor we hold a code for (G7CGMManager.receiveDirectAuthPins):
+    /// The phone reported a NEW sensor we hold a code for (G7CGMManager.receivePairingCode):
     /// forget the old one, find the new one.
     func reacquireForNewSensor() {
         managerQueue.async { [self] in
@@ -275,6 +320,45 @@ class G7BluetoothManager: NSObject {
         }
     }
 #endif
+
+    /// Makes `peripheralManager` the active peripheral, keeping its connection,
+    /// and drops every other managed peripheral. This is the hand-off at the
+    /// end of pairing: the candidate that authenticated becomes the session's
+    /// sensor without a disconnect in between.
+    func adoptAsActive(_ peripheralManager: G7PeripheralManager) {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+
+        managerQueue.sync {
+            managerQueue_stopScanning()
+
+            for (identifier, other) in managedPeripherals where other !== peripheralManager {
+                centralManager.cancelPeripheralConnection(other.peripheral)
+                managedPeripherals.removeValue(forKey: identifier)
+            }
+
+            if activePeripheralManager !== peripheralManager {
+                activePeripheralManager = peripheralManager
+            }
+            peripheralManager.delegate = self
+            peripheralManager.reclaimPeripheral()
+            managedPeripherals[peripheralManager.peripheral.identifier] = peripheralManager
+        }
+    }
+
+    /// Cancels every managed peripheral's connection, not just the active one.
+    /// The pairing run needs this: its candidates are never made active (there
+    /// is no sensor ID yet), so `disconnect()` would leave them connected.
+    func disconnectAll() {
+        dispatchPrecondition(condition: .notOnQueue(managerQueue))
+
+        managerQueue.sync {
+            managerQueue_stopScanning()
+
+            for peripheralManager in managedPeripherals.values {
+                centralManager.cancelPeripheralConnection(peripheralManager.peripheral)
+            }
+        }
+    }
 
     func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
         managerQueue.async {
@@ -288,9 +372,20 @@ class G7BluetoothManager: NSObject {
     private func managerQueue_scanForPeripheral() {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
-        guard centralManager.state == .poweredOn else {
+        // `didDisconnectPeripheral` always rescans, which keeps us alive for a
+        // couple of seconds past release. A pairing run that has finished must
+        // not start scanning again in that window: the sensor it just paired
+        // admits one display, and the session manager is claiming it.
+        guard delegate != nil else {
             return
         }
+
+        guard centralManager.state == .poweredOn else {
+            schedulePoweredOnRecheck()
+            return
+        }
+
+        poweredOnRecheckCount = 0
 
         let currentState = activePeripheral?.state ?? .disconnected
         guard currentState != .connected else {
@@ -339,6 +434,56 @@ class G7BluetoothManager: NSObject {
      The sleep gives the transmitter time to shut down, but keeps the app running.
 
      */
+    /// CoreBluetooth lies about its state at creation: a central built while
+    /// another is being torn down can report `.unknown` or even `.unsupported`
+    /// and then never send a corrective `didUpdateState`, leaving the manager
+    /// permanently convinced Bluetooth is unavailable. Poll our way out, and
+    /// rebuild the central if the state stays stuck.
+    private func schedulePoweredOnRecheck() {
+        dispatchPrecondition(condition: .onQueue(managerQueue))
+
+        guard !poweredOnRecheckScheduled, delegate != nil else {
+            return
+        }
+        poweredOnRecheckScheduled = true
+
+        managerQueue.asyncAfter(deadline: .now() + G7BluetoothManager.poweredOnRecheckInterval) { [weak self] in
+            guard let self = self else { return }
+            self.poweredOnRecheckScheduled = false
+
+            guard self.delegate != nil else {
+                return
+            }
+            guard self.centralManager.state != .poweredOn else {
+                self.poweredOnRecheckCount = 0
+                self.managerQueue_scanForPeripheral()
+                return
+            }
+
+            self.poweredOnRecheckCount += 1
+            self.log.default(
+                "Bluetooth still %{public}@ after %{public}d rechecks",
+                String(describing: self.centralManager.state.rawValue),
+                self.poweredOnRecheckCount
+            )
+
+            let isStuckState = self.centralManager.state == .unknown || self.centralManager.state == .unsupported
+            if isStuckState,
+               self.poweredOnRecheckCount >= G7BluetoothManager.poweredOnRechecksBeforeRecreating,
+               self.centralRecreationCount < G7BluetoothManager.maximumCentralRecreations,
+               self.managedPeripherals.isEmpty
+            {
+                self.log.error("Recreating central manager stuck at %{public}@", String(describing: self.centralManager.state.rawValue))
+                self.centralRecreationCount += 1
+                self.poweredOnRecheckCount = 0
+                self.centralManager.delegate = nil
+                self.centralManager = self.makeCentralManager(queue: self.managerQueue)
+            }
+
+            self.schedulePoweredOnRecheck()
+        }
+    }
+
     fileprivate func scanAfterDelay() {
         DispatchQueue.global(qos: .utility).async {
             Thread.sleep(forTimeInterval: 2)
@@ -384,7 +529,19 @@ class G7BluetoothManager: NSObject {
         return boundedRead("connected") { [unowned self] in self.activePeripheral?.state == .connected }
     }
 
-    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral) {
+    /// The manager already attached to this peripheral, if there is one. A
+    /// candidate dropped from `managedPeripherals` on disconnect is still the
+    /// peripheral's delegate, and may still have a handshake running; a
+    /// second manager would take the delegate role from it, and its commands
+    /// would never hear back.
+    private func makeOrReusePeripheralManager(_ peripheral: CBPeripheral) -> G7PeripheralManager {
+        if let existing = peripheral.delegate as? G7PeripheralManager {
+            return existing
+        }
+        return G7PeripheralManager(peripheral: peripheral, configuration: .dexcomG7, centralManager: centralManager)
+    }
+
+    private func handleDiscoveredPeripheral(_ peripheral: CBPeripheral, advertisementData: [String: Any] = [:]) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
 #if os(watchOS)
@@ -397,18 +554,14 @@ class G7BluetoothManager: NSObject {
 #endif
 
         if let delegate = delegate {
-            switch delegate.bluetoothManager(self, shouldConnectPeripheral: peripheral) {
+            switch delegate.bluetoothManager(self, shouldConnectPeripheral: peripheral, advertisementData: advertisementData) {
             case .makeActive:
                 log.default("Making peripheral active: %{public}@", peripheral.identifier.uuidString)
 
                 if let peripheralManager = activePeripheralManager {
                     peripheralManager.peripheral = peripheral
                 } else {
-                    activePeripheralManager = G7PeripheralManager(
-                        peripheral: peripheral,
-                        configuration: .dexcomG7,
-                        centralManager: centralManager
-                    )
+                    activePeripheralManager = makeOrReusePeripheralManager(peripheral)
                     activePeripheralManager?.delegate = self
                 }
                 self.managedPeripherals[peripheral.identifier] = activePeripheralManager
@@ -419,26 +572,22 @@ class G7BluetoothManager: NSObject {
 #endif
 
             case .connect:
-#if os(watchOS)
-                // Never a neighbour's sensor: an un-adopted watch once connected to the sensor next
-                // door (2026-09-03). Under Loop's own handshake the phone names our sensor by its
-                // code, and holding a code is the proof it is ours. Riding the Dexcom watch app
-                // keeps stock's connect: Dexcom vouches for the sensor there, and a watch with no
-                // codes could otherwise never adopt one.
-                if G7DirectAuth.enabled, G7DirectAuth.pin4(for: peripheral.name) == nil {
-                    log.default("Not connecting to %{public}@: no pairing code for it", peripheral.identifier.uuidString)
-                    return
+                // Pairing hears repeat advertisements from the same candidate;
+                // building a second manager for one peripheral leaves the first
+                // as an orphaned delegate and loses handshake traffic.
+                if let existingManager = self.managedPeripherals[peripheral.identifier] {
+                    existingManager.peripheral = peripheral
+                    if peripheral.state != .connected, peripheral.state != .connecting {
+                        log.default("Reconnecting to peripheral: %{public}@", peripheral.identifier.uuidString)
+                        self.centralManager.connect(peripheral)
+                    }
+                } else {
+                    log.default("Connecting to peripheral: %{public}@", peripheral.identifier.uuidString)
+                    let peripheralManager = makeOrReusePeripheralManager(peripheral)
+                    peripheralManager.delegate = self
+                    self.managedPeripherals[peripheral.identifier] = peripheralManager
+                    self.centralManager.connect(peripheral)
                 }
-#endif
-                log.default("Connecting to peripheral: %{public}@", peripheral.identifier.uuidString)
-                self.centralManager.connect(peripheral)
-                let peripheralManager = G7PeripheralManager(
-                    peripheral: peripheral,
-                    configuration: .dexcomG7,
-                    centralManager: centralManager
-                )
-                peripheralManager.delegate = self
-                self.managedPeripherals[peripheral.identifier] = peripheralManager
             case .ignore:
                 break
             }
@@ -475,15 +624,20 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             if central.isScanning {
                 log.default("Stopping scan on central not powered on")
                 central.stopScan()
-                delegate?.bluetoothManagerScanningStatusDidChange(self)
             }
         }
+        delegate?.bluetoothManagerScanningStatusDidChange(self)
     }
 
     // The watch central always opts into restoration: a daemon-held connect relaunches us for the
     // link, and this is where the relaunch hands it back.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
+
+        guard delegate?.bluetoothManagerShouldAcceptRestoredPeripherals(self) ?? true else {
+            log.default("Ignoring restored peripherals: delegate is not accepting them")
+            return
+        }
 
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
 #if os(watchOS)
@@ -508,7 +662,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
         log.default("%{public}@: %{public}@, data = %{public}@", #function, peripheral, String(describing: advertisementData))
 
         managerQueue.async {
-            self.handleDiscoveredPeripheral(peripheral)
+            self.handleDiscoveredPeripheral(peripheral, advertisementData: advertisementData)
         }
     }
 
@@ -528,13 +682,6 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                     managerQueue_stopScanning()
                 }
             }
-#if os(watchOS)
-            // Loop's own handshake. OFF = ride the Dexcom watch app: the stock observer above has
-            // subscribed to authentication and reads whatever Dexcom's app authenticates.
-            if G7DirectAuth.enabled, auth == nil {
-                managerQueue_startDirectAuth(peripheralManager, peripheral: peripheral)
-            }
-#endif
         }
     }
 
@@ -609,14 +756,11 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
             return
         }
 
-#if os(watchOS)
-        // The handshake owns auth/data/control until it authenticates; then control notifications
-        // fall through to the stock glucose path below.
-        if let a = auth, a.feed(characteristic.uuid, value) { return }
-#endif
 
         switch CGMServiceCharacteristicUUID(rawValue: characteristic.uuid.uuidString.uppercased()) {
-        case .none, .communication?, .data?:
+        case .none, .communication?, .certificate?:
+            // The certificate characteristic only carries handshake payloads,
+            // which the authenticator collects through an installed handler.
             return
         case .control?:
             self.delegate?.bluetoothManager(self, peripheralManager: manager, didReceiveControlResponse: value)
@@ -735,10 +879,10 @@ extension G7BluetoothManager {
         case .disconnecting: return   // the close callback lodges: a connect issued during a cancel was lost inside CoreBluetooth (2026-09-14 21:12)
         default:             break
         }
-        if G7DirectAuth.enabled, G7DirectAuth.pin4(for: peripheral.name) == nil {
+        if let delegate, !delegate.bluetoothManagerCanAuthenticate(self) {
             // A link we cannot authenticate is one the sensor closes unencrypted ~10 s later — a
             // tally count every burst for nothing. Stand down; the code's arrival re-arms
-            // (G7CGMManager.receiveDirectAuthPins → resumeScanning).
+            // (G7CGMManager.receivePairingCode → resumeScanning).
             G7DirectAuth.needsCodeFor = peripheral.name
             watchLog("no pairing code for \(peripheral.name ?? "sensor") — not lodging")
             return
@@ -812,7 +956,6 @@ extension G7BluetoothManager {
 
     /// Returns true when the watch arm owns what happens next (the adopted sensor closed the link).
     fileprivate func managerQueue_watchDidDisconnect(_ peripheral: CBPeripheral, error: Error?) -> Bool {
-        auth?.cancel(); auth = nil
         guard peripheral.identifier == activePeripheralIdentifier else { return false }
         let sinceLinkUp = linkUpAt.map { Date().timeIntervalSince($0) } ?? 0
         linkUpAt = nil; lodged = false; lodgedAt = nil
@@ -848,71 +991,25 @@ extension G7BluetoothManager {
         return true
     }
 
-    // MARK: direct auth — start / feed / ingest (feed is the didUpdateValueFor seam above)
-
-    fileprivate func managerQueue_startDirectAuth(_ pm: G7PeripheralManager, peripheral: CBPeripheral) {
-        dispatchPrecondition(condition: .onQueue(managerQueue))
-        pm.perform { [weak self] m in
-            guard let self else { return }
-            let chars = (peripheral.services ?? []).flatMap { $0.characteristics ?? [] }
-            func char(_ id: CGMServiceCharacteristicUUID) -> CBCharacteristic? { chars.first { $0.uuid == id.cbUUID } }
-            guard let a = char(.authentication), let d = char(.data), let c = char(.control) else {
-                self.watchLog("[direct-auth] cannot start — auth/data/control not all discovered"); return
-            }
-            guard let pin = G7DirectAuth.pin4(for: peripheral.name) else {
-                G7DirectAuth.needsCodeFor = peripheral.name
-                self.watchLog("[direct-auth] no pairing code for \(peripheral.name ?? "sensor") — handshake skipped")
-                return
-            }
-            G7DirectAuth.needsCodeFor = nil
-            let provider = G7DirectAuthFactory.make(transport: m, auth: a, data: d, control: c, pin4: pin,
-                                                    sensorName: peripheral.name) { [weak self] in self?.watchLog($0) }
-            // `auth` is managerQueue-confined; perform's block is on the peripheral manager's own
-            // queue. The first notification the handshake can provoke follows its first write, which
-            // is queued behind this hop, so the feed seam always sees the provider.
-            self.managerQueue.async {
-                guard self.auth == nil else { return }
-                self.auth = provider
-                // watchOS gives a relaunched app ~1–2 s; the full handshake needs ~7 s (fast path ~1.2).
-                let release = self.holdProcess(reason: "G7 direct-auth handshake", upTo: 20)
-                Task {
-                    let r = await provider.authenticate()
-                    release()
-                    self.managerQueue.async {
-                        guard r.authenticated, let egv = r.egvRaw else {
-                            self.watchLog("[direct-auth] FAILED: \(r.error ?? "?") — no same-burst retry; the sensor's close re-lodges for the next burst")
-                            return
-                        }
-                        // INGEST through the STOCK path: clear the observer's pending-auth, then hand
-                        // the raw 0x4E notification to the same parse → handleGlucoseMessage → delegate chain.
-                        self.delegate?.bluetoothManager(self, directAuthDidAuthenticate: m)
-                        self.delegate?.bluetoothManager(self, peripheralManager: m, didReceiveControlResponse: Data(egv))
-                        self.watchLog("[direct-auth] INGEST \(egv.count)-byte EGV\(r.usedFastPath ? " (fast path)" : "")")
-                    }
-                }
-            }
-        }
-    }
 }
 #endif
 
-/// DIRECT AUTH — our OWN J-PAKE authentication to the G7 (see G7DirectAuthSession), so the
-/// watch reads glucose with no Dexcom app present. Default ON on watchOS since 2026-09-13; the
-/// per-sensor pairing code is entered once on the phone and rides to the watch in the context.
+/// DIRECT READ on the watch — Loop's own handshake (`G7Authenticator`, session mode `.direct`)
+/// so the watch reads glucose with no Dexcom app present. Default ON on watchOS since
+/// 2026-09-13; the sensor's pairing code is entered once on the phone and rides to the watch in
+/// the context. OFF = `.eavesdropping`: ride whatever the Dexcom watch app authenticates.
 public enum G7DirectAuth {
     /// Diagnostics ▸ Sensor ▸ Authentication. ON = Loop's own handshake; OFF = ride the Dexcom
     /// watch app (the arm still lodges its request, starts no handshake, and the stock passive
     /// observer reads whatever Dexcom's app authenticates).
     public static let key = "G7Lab.directAuth"
-    /// Per-sensor pairing codes keyed by sensor name (DXCM…): the BLE layer's mirror of
-    /// G7CGMManagerState.directAuthPins, installed by G7CGMManager (which also carries them
-    /// phone→watch inside the context's cgmManagerState). A code only ever works with its own
-    /// sensor, so old entries are harmless and kept.
-    public static let pinsKey = "G7Lab.directAuth.pins"
     /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.directAuth.needsCode"
-    public static let slotByte: UInt8 = 0x01   // concurrent slot, proven to coexist with a phone (auth=1)
+    /// The display type the watch presents at authentication: the sensor keeps one slot per
+    /// type, and 0x01 is the one proven to coexist with the phone's Dexcom app (auth=1 with the
+    /// phone active). The phone presents `G7Advertisement.phoneDisplayType`.
+    public static let watchDisplayType: UInt8 = 0x01
     /// WATCH: ON by default since 2026-09-13 — the watch reads the sensor with its own handshake
     /// (no Dexcom watch app). PHONE: OFF — the phone keeps stock acquisition.
     public static var enabled: Bool {
@@ -922,18 +1019,6 @@ public enum G7DirectAuth {
         #else
         return false
         #endif
-    }
-
-    public static var pins: [String: String] {
-        get { UserDefaults.standard.dictionary(forKey: pinsKey) as? [String: String] ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: pinsKey) }
-    }
-
-    /// The 4 ASCII digits for this sensor, or nil if the user has not entered its code yet.
-    public static func pin4(for sensorName: String?) -> [UInt8]? {
-        guard let name = sensorName, let code = pins[name] else { return nil }
-        let digits = String(code.filter { $0.isNumber }.prefix(4))
-        return digits.count == 4 ? Array(digits.utf8) : nil
     }
 
     public static var needsCodeFor: String? {

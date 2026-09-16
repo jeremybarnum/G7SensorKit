@@ -36,9 +36,11 @@ enum CGMServiceCharacteristicUUID: String, CBUUIDRawValue {
     // Read/Write/Notify
     case backfill = "F8083536-849E-531C-C594-30F1F86A4EA5"
 
-    // Notify — J-PAKE / cert bulk payloads (direct auth only; stock never needed it because
-    // Dexcom performed the auth). Discovered so G7DirectAuthSession can drive the handshake.
-    case data = "F8083538-849E-531C-C594-30F1F86A4EA5"
+    /// Write/Notify. Carries the bulk payloads of the direct pairing
+    /// handshake (J-PAKE round certificates, X.509 certificates, the key
+    /// challenge signature), streamed in 20-byte chunks while the
+    /// authentication characteristic carries the framing.
+    case certificate = "F8083538-849E-531C-C594-30F1F86A4EA5"
 }
 
 
@@ -52,16 +54,15 @@ enum ServiceBCharacteristicUUID: String, CBUUIDRawValue {
 
 extension G7PeripheralManager.Configuration {
     static var dexcomG7: G7PeripheralManager.Configuration {
-        var cgmCharacteristics: [CBUUID] = [
-            CGMServiceCharacteristicUUID.authentication.cbUUID,
-            CGMServiceCharacteristicUUID.control.cbUUID,
-            CGMServiceCharacteristicUUID.backfill.cbUUID,
-        ]
-#if os(watchOS)
-        cgmCharacteristics.append(CGMServiceCharacteristicUUID.data.cbUUID)   // direct auth's 0x4E read
-#endif
         return G7PeripheralManager.Configuration(
-            serviceCharacteristics: [SensorServiceUUID.cgmService.cbUUID: cgmCharacteristics],
+            serviceCharacteristics: [
+                SensorServiceUUID.cgmService.cbUUID: [
+                    CGMServiceCharacteristicUUID.authentication.cbUUID,
+                    CGMServiceCharacteristicUUID.control.cbUUID,
+                    CGMServiceCharacteristicUUID.backfill.cbUUID,
+                    CGMServiceCharacteristicUUID.certificate.cbUUID,
+                ]
+            ],
             notifyingCharacteristics: [:],
             valueUpdateMacros: [:]
         )

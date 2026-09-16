@@ -7,10 +7,11 @@
 //
 
 import Foundation
-import WatchConnectivity
 import G7SensorKit
+import LoopAlgorithm
 import LoopKit
 import LoopKitUI
+import WatchConnectivity
 
 public enum ColorStyle {
     case glucose, warning, critical, normal, dimmed
@@ -25,17 +26,39 @@ class G7SettingsViewModel: ObservableObject {
     @Published private(set) var lifetime: TimeInterval
     @Published private(set) var warmupDuration: TimeInterval
     @Published private(set) var latestReadingTimestamp: Date?
-    @Published var uploadReadings: Bool = true {
-        didSet {
-            cgmManager.uploadReadings = uploadReadings
-        }
-    }
+    @Published private(set) var sessionMode: G7SessionMode = .eavesdropping
+    @Published private(set) var isDexcomAppInstalled: Bool = false
+    @Published private(set) var lifecycleState: G7SensorLifecycleState = .searching
+    @Published private(set) var title: String = ""
+    @Published private(set) var pairedAt: Date?
+    @Published private(set) var previousSensor: G7SensorRecord?
+    @Published private(set) var lastGlucoseTrend: GlucoseTrend?
+    @Published private(set) var sensorEndsAt: Date?
+    @Published private(set) var sensorModel: G7SensorModel = .g7
+    /// "G7 15 Day" once the sensor has said, "G7" before.
+    @Published private(set) var sensorModelName: String = ""
+    @Published private(set) var pairingCode: String?
+    @Published private(set) var serialNumber: String?
+    @Published private(set) var firmwareVersion: String?
+    @Published private(set) var softwareNumber: String?
+    @Published private(set) var siliconVersion: String?
+    @Published private(set) var hardwareVersion: String?
+    @Published private(set) var algorithmVersion: String?
+    /// Whether the sensor has reported its lifetime; until then the defaults
+    /// are in use and not worth presenting as the sensor's own.
+    @Published private(set) var hasReportedLifetime: Bool = false
+    @Published private(set) var lastAuthenticationFailure: String?
+    @Published private(set) var lastAuthenticationFailureDate: Date?
+    @Published private(set) var calibration: G7CalibrationRecord?
+    @Published private(set) var calibrationBounds: G7CalibrationBoundsMessage?
+    @Published private(set) var hasPendingCalibration: Bool = false
+    @Published private(set) var canCalibrate: Bool = false
 
-    /// Direct auth (watch reads the sensor without the Dexcom app): the current sensor's
-    /// pairing-code state, and the one field the user ever types into — once per sensor.
-    @Published private(set) var directAuthCodeStatus: G7CGMManager.DirectAuthCodeStatus = .noSensor
-    @Published var directAuthCodeEntry: String = ""
-
+    /// Watch direct read: the current sensor's pairing-code state, and the one field the user
+    /// ever types into — once per sensor.
+    @Published private(set) var watchPairingCodeStatus: G7CGMManager.WatchPairingCodeStatus = .noSensor
+    @Published var watchPairingCodeEntry: String = ""
+    
     let displayGlucosePreference: DisplayGlucosePreference
 
     private var lastReading: G7GlucoseMessage?
@@ -51,8 +74,10 @@ class G7SettingsViewModel: ObservableObject {
 
     var progressBarState: G7ProgressBarState {
         switch cgmManager.lifecycleState {
-        case .searching:
+        case .searching, .unpaired:
             return .searchingForSensor
+        case .connecting:
+            return .connecting
         case .ok:
             return .lifetimeRemaining
         case .warmup:
@@ -72,6 +97,8 @@ class G7SettingsViewModel: ObservableObject {
         self.lifetime = cgmManager.lifetime
         self.warmupDuration = cgmManager.warmupDuration
         updateValues()
+        // Once per visit to settings: which Dexcom apps the phone admits to.
+        cgmManager.logDeviceCommunication("Dexcom app probe: " + G7DexcomApp.describeProbe(), type: .connection)
 
         self.cgmManager.addStateObserver(self, queue: DispatchQueue.main)
     }
@@ -84,26 +111,38 @@ class G7SettingsViewModel: ObservableObject {
         lastConnect = cgmManager.lastConnect
         lastReading = cgmManager.latestReading
         latestReadingTimestamp = cgmManager.latestReadingTimestamp
-        uploadReadings = cgmManager.state.uploadReadings
         lifetime = cgmManager.lifetime
         warmupDuration = cgmManager.warmupDuration
-        directAuthCodeStatus = cgmManager.directAuthCodeStatus
+        sessionMode = cgmManager.sessionMode
+        isDexcomAppInstalled = G7DexcomApp.isAnyInstalled
+        lifecycleState = cgmManager.lifecycleState
+        title = cgmManager.localizedTitle
+        pairedAt = cgmManager.state.pairedAt
+        previousSensor = cgmManager.state.previousSensor
+        lastGlucoseTrend = cgmManager.latestReading?.hasReliableGlucose == true ? cgmManager.latestReading?.trendType : nil
+        sensorEndsAt = cgmManager.sensorEndsAt
+        sensorModel = cgmManager.sensorModel
+        sensorModelName = cgmManager.sensorModel.displayName(sessionLength: cgmManager.state.extendedVersion?.sessionLength)
+        pairingCode = cgmManager.state.pairingCode
+        serialNumber = cgmManager.state.transmitterVersion?.serialNumberString
+        firmwareVersion = cgmManager.state.transmitterVersion?.firmwareVersion
+        softwareNumber = cgmManager.state.transmitterVersion.map { String($0.softwareNumber) }
+        siliconVersion = cgmManager.state.transmitterVersion.map { String($0.siliconVersion) }
+        hardwareVersion = cgmManager.state.extendedVersion.map { String($0.hardwareVersion) }
+        algorithmVersion = cgmManager.state.extendedVersion.map { String($0.algorithmVersion) }
+        hasReportedLifetime = cgmManager.state.extendedVersion != nil
+        lastAuthenticationFailure = cgmManager.state.lastAuthenticationFailure
+        lastAuthenticationFailureDate = cgmManager.state.lastAuthenticationFailureDate
+        calibration = cgmManager.calibration
+        calibrationBounds = cgmManager.state.calibrationBounds
+        hasPendingCalibration = cgmManager.hasPendingCalibration
+        canCalibrate = cgmManager.canCalibrate
+        watchPairingCodeStatus = cgmManager.watchPairingCodeStatus
     }
 
-    /// Save the entered 4-digit pairing code for the current sensor. Returns false if there is
-    /// no sensor or the entry is not four digits.
-    @discardableResult
-    func saveDirectAuthCode() -> Bool {
-        guard let name = cgmManager.sensorName else { return false }
-        let ok = cgmManager.setDirectAuthPin(directAuthCodeEntry, for: name)
-        if ok {
-            directAuthCodeEntry = ""
-            updateValues()
-        }
-        return ok
-    }
+    // MARK: - Watch direct read
 
-    /// The watch pairing-code section is offered only when a paired watch has the companion app
+    /// The pairing-code section is offered only when a paired watch has the companion app
     /// installed; a phone without the watch app sees exactly the stock screen.
     var showsWatchDirectRead: Bool {
         guard WCSession.isSupported() else { return false }
@@ -111,21 +150,95 @@ class G7SettingsViewModel: ObservableObject {
         return session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
     }
 
-    /// Settings-row text for the pairing-code state.
-    var directAuthCodeStatusText: String {
-        switch directAuthCodeStatus {
+    var watchPairingCodeStatusText: String {
+        switch watchPairingCodeStatus {
         case .noSensor: return "no sensor"
         case .needsCode: return "needs code"
-        case .saved: return "saved — watch will verify on its next connect"
-        case .verified(let at): return "verified ✓ \(dateFormatter.string(from: at))"
+        case .saved: return "saved"
         }
+    }
+
+    /// Save the entered 4-digit pairing code for the current sensor. Returns false if there is
+    /// no sensor or the entry is not four digits.
+    @discardableResult
+    func saveWatchPairingCode() -> Bool {
+        guard cgmManager.sensorName != nil else { return false }
+        let ok = cgmManager.setWatchPairingCode(watchPairingCodeEntry)
+        if ok {
+            watchPairingCodeEntry = ""
+            updateValues()
+        }
+        return ok
+    }
+
+    // MARK: - Calibration
+
+    /// The last reliable reading in mg/dL, for the calibration entry to
+    /// compare against.
+    var lastGlucoseMgdl: Double? {
+        guard let lastReading = lastReading, lastReading.hasReliableGlucose, let quantity = lastReading.glucoseQuantity else {
+            return nil
+        }
+        return quantity.doubleValue(for: .milligramsPerDeciliter)
+    }
+
+    /// The last trend in mg/dL/min, for the "is glucose stable" check.
+    var lastTrendMgdlPerMinute: Double? {
+        guard let lastReading = lastReading, lastReading.hasReliableGlucose else {
+            return nil
+        }
+        return lastReading.trend
+    }
+
+    var glucoseUnit: LoopUnit {
+        displayGlucosePreference.unit
+    }
+
+    var glucoseUnitString: String {
+        displayGlucosePreference.formatter.localizedUnitStringWithPlurality()
+    }
+
+    func formatGlucose(mgdl: Double, includeUnit: Bool = true) -> String {
+        displayGlucosePreference.format(LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: mgdl), includeUnit: includeUnit)
+    }
+
+    /// A value typed in the display unit, as mg/dL.
+    func mgdl(fromDisplayValue value: Double) -> Double {
+        LoopQuantity(unit: displayGlucosePreference.unit, doubleValue: value).doubleValue(for: .milligramsPerDeciliter)
+    }
+
+    func calibrate(mgdl: Double) {
+        cgmManager.calibrate(glucose: UInt16(mgdl.rounded()))
+        updateValues()
+    }
+
+    func cancelPendingCalibration() {
+        cgmManager.cancelPendingCalibration()
+        updateValues()
+    }
+
+    /// Whether the session has run its course and the next thing to do is
+    /// put on and pair a new sensor.
+    var needsNewSensor: Bool {
+        switch lifecycleState {
+        case .expired, .failed, .gracePeriod, .unpaired:
+            return true
+        case .searching, .connecting, .warmup, .ok:
+            return false
+        }
+    }
+
+    /// Re-check things that change outside the manager, such as the Dexcom
+    /// app being deleted while this screen was in the background.
+    func refreshEnvironment() {
+        isDexcomAppInstalled = G7DexcomApp.isAnyInstalled
     }
 
     var progressBarColorStyle: ColorStyle {
         switch progressBarState {
         case .warmupProgress:
             return .glucose
-        case .searchingForSensor:
+        case .searchingForSensor, .connecting:
             return .dimmed
         case .sensorExpired, .sensorFailed:
             return .critical
@@ -145,7 +258,7 @@ class G7SettingsViewModel: ObservableObject {
 
     var progressBarProgress: Double {
         switch progressBarState {
-        case .searchingForSensor:
+        case .searchingForSensor, .connecting:
             return 0
         case .warmupProgress:
             guard let value = progressValue, value > 0 else {
@@ -169,7 +282,7 @@ class G7SettingsViewModel: ObservableObject {
 
     var progressReferenceDate: Date? {
         switch progressBarState {
-        case .searchingForSensor:
+        case .searchingForSensor, .connecting:
             return nil
         case .sensorExpired, .gracePeriodRemaining:
             return cgmManager.sensorEndsAt
@@ -184,7 +297,7 @@ class G7SettingsViewModel: ObservableObject {
 
     var progressValue: TimeInterval? {
         switch progressBarState {
-        case .sensorExpired, .sensorFailed, .searchingForSensor:
+        case .sensorExpired, .sensorFailed, .searchingForSensor, .connecting:
             guard let sensorEndsAt = cgmManager.sensorEndsAt else {
                 return nil
             }
@@ -209,6 +322,31 @@ class G7SettingsViewModel: ObservableObject {
 
     func scanForNewSensor() {
         cgmManager.scanForNewSensor()
+    }
+
+    /// Whether the last reading carries a glucose value worth showing.
+    var hasLastGlucose: Bool {
+        guard let lastReading = lastReading, lastReading.hasReliableGlucose else {
+            return false
+        }
+        return lastReading.glucoseQuantity != nil
+    }
+
+    /// The last glucose without its unit, for a layout that sets the unit
+    /// separately. LOW/HIGH stand in for out-of-range values as usual.
+    var lastGlucoseValueString: String {
+        guard let lastReading = lastReading, lastReading.hasReliableGlucose, let quantity = lastReading.glucoseQuantity else {
+            return LocalizedString("– – –", comment: "No glucose value representation (3 dashes for mg/dL)")
+        }
+
+        switch lastReading.glucoseRangeCategory {
+        case .some(.belowRange):
+            return LocalizedString("LOW", comment: "String displayed instead of a glucose value below the CGM range")
+        case .some(.aboveRange):
+            return LocalizedString("HIGH", comment: "String displayed instead of a glucose value above the CGM range")
+        default:
+            return displayGlucosePreference.formatter.string(from: quantity, includeUnit: false) ?? ""
+        }
     }
 
     var lastGlucoseString: String {
