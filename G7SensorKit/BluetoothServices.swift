@@ -52,15 +52,16 @@ enum ServiceBCharacteristicUUID: String, CBUUIDRawValue {
 
 extension G7PeripheralManager.Configuration {
     static var dexcomG7: G7PeripheralManager.Configuration {
+        var cgmCharacteristics: [CBUUID] = [
+            CGMServiceCharacteristicUUID.authentication.cbUUID,
+            CGMServiceCharacteristicUUID.control.cbUUID,
+            CGMServiceCharacteristicUUID.backfill.cbUUID,
+        ]
+#if os(watchOS)
+        cgmCharacteristics.append(CGMServiceCharacteristicUUID.data.cbUUID)   // direct auth's 0x4E read
+#endif
         return G7PeripheralManager.Configuration(
-            serviceCharacteristics: [
-                SensorServiceUUID.cgmService.cbUUID: [
-                    CGMServiceCharacteristicUUID.authentication.cbUUID,
-                    CGMServiceCharacteristicUUID.control.cbUUID,
-                    CGMServiceCharacteristicUUID.backfill.cbUUID,
-                    CGMServiceCharacteristicUUID.data.cbUUID,
-                ]
-            ],
+            serviceCharacteristics: [SensorServiceUUID.cgmService.cbUUID: cgmCharacteristics],
             notifyingCharacteristics: [:],
             valueUpdateMacros: [:]
         )

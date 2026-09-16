@@ -231,11 +231,13 @@ public class G7CGMManager: CGMManager {
     /// whole flow — glance note, phone entry, sync, verified — gets exercised. The legacy key is
     /// simply cleared so it can never resurface.
     private func installDirectAuthPins() {
+#if os(watchOS)
         UserDefaults.standard.removeObject(forKey: G7DirectAuth.legacyPinKey)
         G7DirectAuth.pins = state.directAuthPins
         if let needs = G7DirectAuth.needsCodeFor, state.directAuthPins[needs] != nil {
             G7DirectAuth.needsCodeFor = nil
         }
+#endif
     }
 
     init(state: G7CGMManagerState, sensor: G7Sensor) {
@@ -281,6 +283,7 @@ public class G7CGMManager: CGMManager {
 
     /// Drop the link and re-acquire the SAME sensor, keeping its identity. The user's
     /// "Reconnect CGM" action; see `G7BluetoothManager.recycleConnectForLab`.
+#if os(watchOS)
     public func recycleG7ConnectForLab() { sensor.recycleConnectForLab() }
     /// Timed, bounded connect experiment (see G7TimedConnect). Seeds the grid from the last
     /// persisted reading so the first cycle lands on the sensor's real cadence.
@@ -289,6 +292,7 @@ public class G7CGMManager: CGMManager {
     /// only arms while `G7TimedConnect.runtimeAvailable()` is true, so the host calls this on
     /// every transition to stand the grid timer down or bring it back.
     public func timedRuntimeDidChange() { sensor.timedRuntimeDidChange() }
+#endif
 
     /// Direct-auth crypto link/self-test (Stage 1). Initializes the embedded J-PAKE/OpenSSL
     /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
@@ -323,8 +327,10 @@ public class G7CGMManager: CGMManager {
             state.directAuthPins[sensorName] = digits
             state.directAuthVerifiedAt[sensorName] = nil
         }
+#if os(watchOS)
         G7DirectAuth.pins = state.directAuthPins
         if G7DirectAuth.needsCodeFor == sensorName { G7DirectAuth.needsCodeFor = nil }
+#endif
         logDeviceCommunication("direct-auth: pairing code saved for \(sensorName)", type: .connection)
         return true
     }
@@ -334,6 +340,7 @@ public class G7CGMManager: CGMManager {
     /// adopt it by identity and go find it — no scan of our own is ever needed to notice a
     /// sensor change, which is the whole point on a ride-only/timed watch.
     public func receiveDirectAuthPins(_ pins: [String: String], phoneSensorID: String?) {
+#if os(watchOS)
         guard !pins.isEmpty else { return }
         let before = state
         mutateState { state in
@@ -356,6 +363,7 @@ public class G7CGMManager: CGMManager {
         } else if state.directAuthPins != before.directAuthPins {
             logDeviceCommunication("direct-auth: pairing codes updated from the phone (\(state.directAuthPins.count) sensor(s))", type: .connection)
         }
+#endif
     }
 
     public func scanForNewSensor() {

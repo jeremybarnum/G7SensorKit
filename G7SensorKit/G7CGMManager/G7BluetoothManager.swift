@@ -222,7 +222,9 @@ class G7BluetoothManager: NSObject {
     // the root cause (H14: a scan session dead at the bluetoothd level while isScanning reads true), a
     // full recycle of the acquisition is correct under every theory. 320 s = one full sensor window plus
     // jitter: a whole window with acquisition armed and NOTHING delivered is deafness, not bad luck.
+#if os(watchOS)
     private var scanWatchdog: DispatchSourceTimer?
+#endif
     private var lastDeliveryAt: Date?
 
     // MARK: - Timed, bounded connect state (see G7TimedConnect)
@@ -288,6 +290,7 @@ class G7BluetoothManager: NSObject {
     }
     private static let timedClock: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.S"; return f }()
 
+#if os(watchOS)
     private func armScanWatchdog() {
         scanWatchdog?.cancel()
         if lastDeliveryAt == nil { lastDeliveryAt = Date() }   // baseline, so the first check is not "∞"
@@ -311,6 +314,7 @@ class G7BluetoothManager: NSObject {
         managerQueue_stopScanning()
         managerQueue_scanForPeripheral()
     }
+#endif
 
     // MARK: - Timed, bounded connect
 
@@ -318,6 +322,7 @@ class G7BluetoothManager: NSObject {
     /// message (stock path and direct auth alike). The burst-offset line is the tuning metric for
     /// `G7TimedConnect.fireOffset`: connect time − reading timestamp, expected ≈ +2 s.
     func noteReading(at readingTimestamp: Date) {
+#if os(watchOS)
         managerQueue.async { [self] in
             timedAnchor = readingTimestamp
             timedMisses = 0
@@ -326,6 +331,7 @@ class G7BluetoothManager: NSObject {
                                    Self.timedClock.string(from: readingTimestamp), c.timeIntervalSince(readingTimestamp)))
             }
         }
+#endif
     }
 
     /// Public entry (off the manager queue). ON: drop any scan or standing request and arm the
@@ -805,11 +811,13 @@ class G7BluetoothManager: NSObject {
             // Remembered across relaunches for the system-held arm only: a relaunch otherwise
             // drops the adopted peripheral and the arm can lodge nothing until a scan pass finds
             // the sensor again — which, with no runtime, it never does (2026-09-14 05:37→06:03).
+#if os(watchOS)
             if let id = activePeripheralManager?.peripheral.identifier {
                 UserDefaults.standard.set(id.uuidString, forKey: G7TimedConnect.adoptedPeripheralKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: G7TimedConnect.adoptedPeripheralKey)
             }
+#endif
         }
     }
 
@@ -1041,7 +1049,13 @@ class G7BluetoothManager: NSObject {
         // lesson ("scan is the primitive"). didConnect stops the scan via readied →
         // managerQueue_stopScanning, and handleDiscoveredPeripheral's #101 guard makes a discovery
         // during a pending connect a no-op, so this cannot churn.
-        if activePeripheral?.state != .connected {
+#if os(watchOS)
+        // 2026-08-20: acquisition stays armed while the known sensor is not linked (outage note above).
+        let acquisitionNeeded = activePeripheral?.state != .connected
+#else
+        let acquisitionNeeded = activePeripheral == nil          // stock 8862288a:222
+#endif
+        if acquisitionNeeded {
             centralManager.registerForConnectionEvents(options: [CBConnectionEventMatchingOption.serviceUUIDs: sensorServices])
 
             // DIRECT AUTH: there is no Dexcom app on the wrist to ride, so "wait for Dexcom's
@@ -1063,7 +1077,9 @@ class G7BluetoothManager: NSObject {
             }
             delegate?.bluetoothManagerScanningStatusDidChange(self)
         }
+#if os(watchOS)
         armScanWatchdog()
+#endif
     }
 
     /**
@@ -1082,17 +1098,21 @@ class G7BluetoothManager: NSObject {
     private var _scanRestartPending = false
 
     fileprivate func scanAfterDelay() {
+#if os(watchOS)
         scanRestartPending.lock()
         let alreadyPending = _scanRestartPending
         _scanRestartPending = true
         scanRestartPending.unlock()
         guard !alreadyPending else { return }
+#endif
 
         DispatchQueue.global(qos: .utility).async {
             Thread.sleep(forTimeInterval: 2)
+#if os(watchOS)
             self.scanRestartPending.lock()
             self._scanRestartPending = false
             self.scanRestartPending.unlock()
+#endif
             self.scanForPeripheral()
         }
     }
@@ -1115,7 +1135,11 @@ class G7BluetoothManager: NSObject {
             self.readCacheLock.lock(); self.readCache[key] = value; self.readCacheLock.unlock()
             done.signal()
         }
-        _ = done.wait(timeout: .now() + 0.05)
+#if os(watchOS)
+        _ = done.wait(timeout: .now() + 0.05)   // 2026-09-12 lock-inversion watchdog kill
+#else
+        done.wait()                             // stock semantics: a synchronous read of the queue's answer
+#endif
         readCacheLock.lock(); defer { readCacheLock.unlock() }
         return readCache[key] ?? false
     }
@@ -1143,10 +1167,12 @@ class G7BluetoothManager: NSObject {
         // D2W peripheral — each firing landed here and issued ANOTHER connect() while the
         // first was still pending, minting a fresh G7PeripheralManager per event (~10/s).
         // A pending connect is already doing everything a duplicate would; skip it.
+#if os(watchOS)
         if peripheral.state == .connecting, managedPeripherals[peripheral.identifier] != nil {
             G7RadioCensus.noteRideSignal()
             return
         }
+#endif
 
         if let delegate = delegate {
             switch delegate.bluetoothManager(self, shouldConnectPeripheral: peripheral) {
@@ -1245,9 +1271,11 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             for peripheral in peripherals {
                 log.default("Restoring peripheral from state: %{public}@", peripheral.identifier.uuidString)
                 handleDiscoveredPeripheral(peripheral)
+#if os(watchOS)
                 // An already-connected peripheral gets no second didConnect: run that path now so
                 // the handshake starts on the link the system brought us back for.
                 if peripheral.state == .connected { self.centralManager(central, didConnect: peripheral) }
+#endif
             }
         }
     }
