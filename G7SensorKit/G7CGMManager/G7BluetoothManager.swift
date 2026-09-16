@@ -836,18 +836,24 @@ class G7BluetoothManager: NSObject {
         super.init()
 
         managerQueue.sync {
-#if os(iOS)
-            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
-#else
-            // The watch host owns reconnect policy, so the watch central normally opts OUT of
-            // state restoration. The system-held experiment (G7TimedConnect.systemHeld) opts in:
-            // the watchOS 9+ SDK documents relaunching an app into the background to finish
-            // Bluetooth work (willRestoreState + WKBluetoothAlertRefreshBackgroundTask), and
-            // whether that wake is prompt enough for the sensor's window is the question.
-            self.centralManager = CBCentralManager(delegate: self, queue: managerQueue,
-                options: G7TimedConnect.systemHeld ? [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"] : nil)
-#endif
+            self.centralManager = self.makeCentralManager(queue: self.managerQueue)
         }
+    }
+
+    /// Factory seam so tests can substitute a central manager without the state
+    /// restoration option, which raises an exception outside an app with the
+    /// bluetooth-central background mode.
+    func makeCentralManager(queue: DispatchQueue) -> CBCentralManager {
+#if os(watchOS)
+        // The watch host owns reconnect policy, so the watch central normally opts OUT of state
+        // restoration. The system-held arm (G7TimedConnect.systemHeld) opts in: the daemon-held
+        // connect relaunches the app into the background to finish Bluetooth work.
+        let options: [String: Any]? = G7TimedConnect.systemHeld
+            ? [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"] : nil
+        return CBCentralManager(delegate: self, queue: queue, options: options)
+#else
+        return CBCentralManager(delegate: self, queue: queue, options: [CBCentralManagerOptionRestoreIdentifierKey: "com.loudnate.CGMBLEKit"])
+#endif
     }
 
     // MARK: - Actions

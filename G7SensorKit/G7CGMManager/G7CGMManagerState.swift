@@ -20,6 +20,11 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
     public var latestReadingTimestamp: Date?
     public var latestConnect: Date?
     public var uploadReadings: Bool = true
+    /// When a suspected session end started its grace period, or nil if none is
+    /// pending. Persisted so a grace period survives app termination: the deferred
+    /// scan is an in-memory work item, so without this a genuinely ended session
+    /// would leave the manager tracking a sensor that will never advertise again.
+    public var suspectedSessionEndAt: Date?
 
     /// Direct auth (watch reads the sensor with its own J-PAKE, no Dexcom app on the watch):
     /// the per-sensor pairing codes, keyed by sensor name. Entered once per sensor on the phone
@@ -47,6 +52,7 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         self.uploadReadings = rawValue["uploadReadings"] as? Bool ?? true
         self.directAuthPins = rawValue["directAuthPins"] as? [String: String] ?? [:]
         self.directAuthVerifiedAt = rawValue["directAuthVerifiedAt"] as? [String: Date] ?? [:]
+        self.suspectedSessionEndAt = rawValue["suspectedSessionEndAt"] as? Date
     }
 
     public var rawValue: RawValue {
@@ -60,6 +66,7 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         rawValue["uploadReadings"] = uploadReadings
         rawValue["directAuthPins"] = directAuthPins
         rawValue["directAuthVerifiedAt"] = directAuthVerifiedAt
+        rawValue["suspectedSessionEndAt"] = suspectedSessionEndAt
         return rawValue
     }
 }
