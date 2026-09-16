@@ -1001,12 +1001,14 @@ public enum G7WatchDirectRead {
     /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.watchDirectRead.needsCode"
-    /// The display slot the watch takes at authentication (`G7DisplayType`). Raw value 0x01 is
-    /// the one PROVEN to coexist with the phone's Dexcom app (auth=1 bond=1 with the phone
-    /// active, 2026-09-11 onward); Pete's table names it `.medical` and reserves `.watch` (3)
-    /// by inference from DexKit — untested on the air by us. Try `.watch` in a controlled burst
-    /// before changing this.
-    public static let displayType: G7DisplayType = .medical
+    /// The display slot the watch takes at authentication (`G7DisplayType`). `.watch` (3) is
+    /// Pete's value for a watch app, by inference from DexKit; first tried on the air
+    /// 2026-09-16. `.medical` (raw 0x01) is the slot proven since 2026-09-11 to coexist with
+    /// the phone's Dexcom app (auth=1 bond=1 with the phone active) and on Pete's code the
+    /// same day — the fallback if the sensor refuses 3. Changing the slot invalidates the
+    /// stored key: the next connection fails its challenge, drops the key and pairs again
+    /// with the retained code.
+    public static let displayType: G7DisplayType = .watch
 
     public static var needsCodeFor: String? {
         get { UserDefaults.standard.string(forKey: needsCodeKey) }
