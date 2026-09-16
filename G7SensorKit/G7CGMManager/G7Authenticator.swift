@@ -123,10 +123,8 @@ final class G7Authenticator {
     private let pairingCode: String?
     private let storedSharedKey: Data?
     private let stepTimeout: TimeInterval
-    /// Which kind of display we present ourselves as in the AES challenge. The sensor keeps
-    /// one slot per display type (see `G7Advertisement`): a phone is 0x02, and a watch that
-    /// must coexist with the phone's Dexcom app uses 0x01.
-    private let displayType: UInt8
+    /// Which of the sensor's display slots this client takes.
+    private let displayType: G7DisplayType
 
     /// Receives a short description of each step as it happens, for the
     /// in-app device communication log. A tester reporting "it got stuck"
@@ -134,7 +132,7 @@ final class G7Authenticator {
     /// the pairing code or key material.
     var logHandler: ((String) -> Void)?
 
-    init(pairingCode: String?, storedSharedKey: Data?, stepTimeout: TimeInterval, displayType: UInt8 = G7Advertisement.phoneDisplayType) {
+    init(pairingCode: String?, storedSharedKey: Data?, stepTimeout: TimeInterval, displayType: G7DisplayType = .phone) {
         self.pairingCode = pairingCode
         self.storedSharedKey = storedSharedKey
         self.stepTimeout = stepTimeout
@@ -299,8 +297,8 @@ final class G7Authenticator {
     ) throws -> AuthChallengeRxMessage {
         let step = "challenge"
         let challenge = G7JPAKE.secureRandomBytes(8)
-        report("Challenge: sending ours")
-        try peripheral.writeValue(Data([0x02]) + challenge + Data([displayType]), for: .authentication, type: .withResponse)
+        report("Challenge: sending ours as display type \(displayType)")
+        try peripheral.writeValue(Data([0x02]) + challenge + Data([displayType.rawValue]), for: .authentication, type: .withResponse)
 
         let response = try waitForAuthentication(authentication, prefix: 0x03, step: step)
         guard response.count >= 17 else {

@@ -139,11 +139,6 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     public weak var delegate: G7SensorDelegate?
 
-    /// The display type presented to the sensor at authentication (`G7Authenticator`). The
-    /// phone default; a host that must share the sensor with the phone's Dexcom app sets
-    /// another slot before the first connection.
-    public var displayType: UInt8 = G7Advertisement.phoneDisplayType
-
     /// How readings are obtained. Changed in place by `reconfigure`, so the
     /// Bluetooth central (and any connection it holds) survives a pairing.
     public private(set) var mode: G7SessionMode
@@ -200,12 +195,17 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
         lockedCredentials.value.sensorID
     }
 
-    convenience init(mode: G7SessionMode, credentials: G7SensorCredentials) {
-        self.init(mode: mode, credentials: credentials, bluetoothManager: G7BluetoothManager())
+    /// Which of the sensor's display slots this session takes: a phone by
+    /// default; a watch app would take its own, alongside the phone's.
+    let displayType: G7DisplayType
+
+    convenience init(mode: G7SessionMode, credentials: G7SensorCredentials, displayType: G7DisplayType = .phone) {
+        self.init(mode: mode, credentials: credentials, bluetoothManager: G7BluetoothManager(), displayType: displayType)
     }
 
-    init(mode: G7SessionMode, credentials: G7SensorCredentials, bluetoothManager: G7BluetoothManager) {
+    init(mode: G7SessionMode, credentials: G7SensorCredentials, bluetoothManager: G7BluetoothManager, displayType: G7DisplayType = .phone) {
         self.mode = mode
+        self.displayType = displayType
         self.lockedCredentials = Locked(credentials)
         self.bluetoothManager = bluetoothManager
         bluetoothManager.delegate = self

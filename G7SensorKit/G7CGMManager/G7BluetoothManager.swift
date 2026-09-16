@@ -1006,10 +1006,12 @@ public enum G7DirectAuth {
     /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.directAuth.needsCode"
-    /// The display type the watch presents at authentication: the sensor keeps one slot per
-    /// type, and 0x01 is the one proven to coexist with the phone's Dexcom app (auth=1 with the
-    /// phone active). The phone presents `G7Advertisement.phoneDisplayType`.
-    public static let watchDisplayType: UInt8 = 0x01
+    /// The display slot the watch takes at authentication (`G7DisplayType`). Raw value 0x01 is
+    /// the one PROVEN to coexist with the phone's Dexcom app (auth=1 bond=1 with the phone
+    /// active, 2026-09-11 onward); Pete's table names it `.medical` and reserves `.watch` (3)
+    /// by inference from DexKit — untested on the air by us. Try `.watch` in a controlled burst
+    /// before changing this.
+    public static let watchDisplayType: G7DisplayType = .medical
     /// WATCH: ON by default since 2026-09-13 — the watch reads the sensor with its own handshake
     /// (no Dexcom watch app). PHONE: OFF — the phone keeps stock acquisition.
     public static var enabled: Bool {

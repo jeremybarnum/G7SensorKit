@@ -23,6 +23,7 @@
 		3B0FD2A52D803BF100E5E921 /* LoopKitUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3B0FD2A42D803BF000E5E921 /* LoopKitUI.framework */; };
 		3B89AC3363647A626013F1F7 /* G7JPAKE.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC55A31BC331A5D2BFECCCAE /* G7JPAKE.swift */; };
 		3EDDE73CAEB9F8E0E287A79D /* G7ApplySensorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D529C88691A17AE5F7C3CCDC /* G7ApplySensorView.swift */; };
+		44ED51DCD84D31C49A0562A5 /* G7DisplayType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E059BA3DC14FA6EFD7349459 /* G7DisplayType.swift */; };
 		469D84E87219FFD71E6E4E55 /* G7AES.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EAC7671097D0F297BB677A7 /* G7AES.swift */; };
 		489698AD84D175543D71A909 /* G7PreviousSensorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43B55BD17A189B93023FB123 /* G7PreviousSensorView.swift */; };
 		58A275C940ADA74E3828C898 /* G7P256.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DAB1A5AFF51A60CEEAC3AE /* G7P256.swift */; };
@@ -116,6 +117,7 @@
 		CC2B432FD8E5D6A6F13F5B03 /* G7SensorPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F59F477EC2FFF6AA0EE33B9 /* G7SensorPackage.swift */; };
 		D1BE7A1E8CD38C5192BD0FC5 /* G7PairingSuccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C430DDA48C3042E42A1F700 /* G7PairingSuccessView.swift */; };
 		D1C4D5C2F3BA5FD6DD38F7B5 /* G7CalibrationRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CDD70ABFDFC89A57CB23457 /* G7CalibrationRecord.swift */; };
+		D653BA9600412D48690BB1E1 /* G7DisplayType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E059BA3DC14FA6EFD7349459 /* G7DisplayType.swift */; };
 		E27CE188628E87FC1F575268 /* G7SensorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2653F7631E0CDF268456A00A /* G7SensorModel.swift */; };
 		E4908B22ECA55851278BBC6D /* G7P256.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0DAB1A5AFF51A60CEEAC3AE /* G7P256.swift */; };
 		E5BF4D21841FFD6929AFC1FF /* G7SensorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2653F7631E0CDF268456A00A /* G7SensorModel.swift */; };
@@ -291,6 +293,7 @@
 		D529C88691A17AE5F7C3CCDC /* G7ApplySensorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7ApplySensorView.swift; sourceTree = "<group>"; };
 		D76FBBA4B3DB24ED9ED07481 /* G7CalibrationFlowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7CalibrationFlowView.swift; sourceTree = "<group>"; };
 		DD33A1A06D0B6AAE69615264 /* G7CalibrationMessage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7CalibrationMessage.swift; sourceTree = "<group>"; };
+		E059BA3DC14FA6EFD7349459 /* G7DisplayType.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7DisplayType.swift; sourceTree = "<group>"; };
 		E0DAB1A5AFF51A60CEEAC3AE /* G7P256.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7P256.swift; sourceTree = "<group>"; };
 		E4E17A2F7DB893F7BA2E8D51 /* G7LifecycleAlertTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7LifecycleAlertTests.swift; sourceTree = "<group>"; };
 		F2C5D1A1F2AF33D8074B95F2 /* G7PackageScannerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = G7PackageScannerView.swift; sourceTree = "<group>"; };
@@ -562,6 +565,7 @@
 				C17F5142291EB36700555EB5 /* AuthChallengeRxMessage.swift */,
 				DD33A1A06D0B6AAE69615264 /* G7CalibrationMessage.swift */,
 				7B3F38037AB89794C001DB24 /* TransmitterVersionMessage.swift */,
+				E059BA3DC14FA6EFD7349459 /* G7DisplayType.swift */,
 			);
 			path = Messages;
 			sourceTree = "<group>";
@@ -884,6 +888,7 @@
 				0869252B56941BBA01F2B6D7 /* G7PairingPlanner.swift in Sources */,
 				A04BD81243715E36ED9D080E /* G7PairingService.swift in Sources */,
 				CC2B432FD8E5D6A6F13F5B03 /* G7SensorPackage.swift in Sources */,
+				D653BA9600412D48690BB1E1 /* G7DisplayType.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -997,6 +1002,7 @@
 				59AC56B39669BE228E64E02F /* G7PairingPlanner.swift in Sources */,
 				6C29CD45C803699268BFC78C /* G7PairingService.swift in Sources */,
 				808E416E4F165CD7EE2EDE9C /* G7SensorPackage.swift in Sources */,
+				44ED51DCD84D31C49A0562A5 /* G7DisplayType.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

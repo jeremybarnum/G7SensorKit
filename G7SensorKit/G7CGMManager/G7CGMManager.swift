@@ -232,10 +232,10 @@ public class G7CGMManager: CGMManager {
     /// A manager with no sensor yet. Created at the start of setup, so the
     /// CGM exists and its device log carries the pairing from the first line;
     /// `applyPairingResult` completes it.
-    public convenience init(sessionMode: G7SessionMode) {
+    public convenience init(sessionMode: G7SessionMode, displayType: G7DisplayType = .phone) {
         var state = G7CGMManagerState()
         state.sessionMode = sessionMode
-        self.init(state: state, sensor: G7Sensor(mode: sessionMode, credentials: state.sensorCredentials))
+        self.init(state: state, sensor: G7Sensor(mode: sessionMode, credentials: state.sensorCredentials, displayType: displayType))
     }
 
     /// Creates a manager for a sensor that has just been paired directly.
@@ -243,7 +243,7 @@ public class G7CGMManager: CGMManager {
     /// With a `handoff`, the session is built around the central the pairing
     /// run used and takes over its authenticated connection, so the first
     /// reading arrives now rather than on the sensor's next advertisement.
-    public convenience init(pairingCode: String, peripheralIdentifier: UUID?, sharedKey: Data?, handoff: G7PairingHandoff? = nil) {
+    public convenience init(pairingCode: String, peripheralIdentifier: UUID?, sharedKey: Data?, handoff: G7PairingHandoff? = nil, displayType: G7DisplayType = .phone) {
         var state = G7CGMManagerState()
         state.sessionMode = .direct
         state.pairingCode = pairingCode
@@ -253,9 +253,9 @@ public class G7CGMManager: CGMManager {
 
         let sensor: G7Sensor
         if let handoff = handoff {
-            sensor = G7Sensor(mode: .direct, credentials: state.sensorCredentials, bluetoothManager: handoff.bluetoothManager)
+            sensor = G7Sensor(mode: .direct, credentials: state.sensorCredentials, bluetoothManager: handoff.bluetoothManager, displayType: displayType)
         } else {
-            sensor = G7Sensor(mode: .direct, credentials: state.sensorCredentials)
+            sensor = G7Sensor(mode: .direct, credentials: state.sensorCredentials, displayType: displayType)
         }
         self.init(state: state, sensor: sensor)
 
@@ -268,18 +268,24 @@ public class G7CGMManager: CGMManager {
         var state = G7CGMManagerState(rawValue: rawState)
 #if os(watchOS)
         state.sessionMode = G7CGMManager.watchSessionMode(for: state)
+        let displayType = G7DirectAuth.watchDisplayType
+#else
+        let displayType = G7DisplayType.phone
 #endif
-        self.init(state: state, sensor: G7Sensor(mode: state.sessionMode, credentials: state.sensorCredentials))
+        self.init(state: state, sensor: G7Sensor(mode: state.sessionMode, credentials: state.sensorCredentials, displayType: displayType))
         sensor.needsVersionInfo = state.extendedVersion == nil
+    }
+
+    /// Which of the sensor's display slots this app takes. A phone by
+    /// default; a watch app takes its own, alongside the phone's.
+    public var displayType: G7DisplayType {
+        sensor.displayType
     }
 
     init(state: G7CGMManagerState, sensor: G7Sensor) {
         lockedState = Locked(state)
         self.sensor = sensor
         sensor.delegate = self
-#if os(watchOS)
-        sensor.displayType = G7DirectAuth.watchDisplayType
-#endif
         sensor.latestReadingDate = state.latestReadingTimestamp
         // A calibration entered before the app was last terminated is still owed to the sensor.
         if let calibration = state.calibration, calibration.outcome == .pending {
