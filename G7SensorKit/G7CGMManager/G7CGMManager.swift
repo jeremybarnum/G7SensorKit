@@ -226,13 +226,9 @@ public class G7CGMManager: CGMManager {
     }
 
     /// Hand the per-sensor pairing codes to the BLE layer (G7DirectAuth reads a UserDefaults
-    /// mirror because it has no reference to this manager). The pre-2026-09-12 single code is
-    /// deliberately NOT migrated (Jeremy): the bench sensor must come up with no code, so the
-    /// whole flow — glance note, phone entry, sync, verified — gets exercised. The legacy key is
-    /// simply cleared so it can never resurface.
+    /// mirror because it has no reference to this manager).
     private func installDirectAuthPins() {
 #if os(watchOS)
-        UserDefaults.standard.removeObject(forKey: G7DirectAuth.legacyPinKey)
         G7DirectAuth.pins = state.directAuthPins
         if let needs = G7DirectAuth.needsCodeFor, state.directAuthPins[needs] != nil {
             G7DirectAuth.needsCodeFor = nil
@@ -281,24 +277,10 @@ public class G7CGMManager: CGMManager {
         return nil
     }
 
-    /// Drop the link and re-acquire the SAME sensor, keeping its identity. The user's
-    /// "Reconnect CGM" action; see `G7BluetoothManager.recycleConnectForLab`.
+    /// The user's "Reconnect sensor": drop the link or the lodged request and run one bootstrap
+    /// pass for the SAME sensor, keeping its identity; see `G7BluetoothManager.reconnect`.
 #if os(watchOS)
-    public func recycleG7ConnectForLab() { sensor.recycleConnectForLab() }
-    /// Timed, bounded connect experiment (see G7TimedConnect). Seeds the grid from the last
-    /// persisted reading so the first cycle lands on the sensor's real cadence.
-    public func setTimedConnectForLab(_ on: Bool) { sensor.setTimedConnect(on, seedAnchor: state.latestReadingTimestamp) }
-    /// The host's background runtime changed (a keepalive was acquired or released). Timed connect
-    /// only arms while `G7TimedConnect.runtimeAvailable()` is true, so the host calls this on
-    /// every transition to stand the grid timer down or bring it back.
-    public func timedRuntimeDidChange() { sensor.timedRuntimeDidChange() }
-#endif
-
-    /// Direct-auth crypto link/self-test (Stage 1). Initializes the embedded J-PAKE/OpenSSL
-    /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
-    /// are statically linked into this build. No Bluetooth, no sensor contact.
-#if os(watchOS)
-    public func directAuthCryptoSelfTest(pin4: [UInt8]) -> Bool { G7AuthCrypto.selfTestLinks(pin4: pin4) }
+    public func reconnectG7() { sensor.reconnect() }
 #endif
 
     // MARK: - Direct auth pairing codes (entered once per sensor on the phone; ride to the watch
@@ -340,7 +322,7 @@ public class G7CGMManager: CGMManager {
     /// WATCH: the phone's cgmManagerState arrived in a context. Take its codes (the phone is
     /// where they are entered), and if the phone has moved to a NEW sensor we have a code for,
     /// adopt it by identity and go find it — no scan of our own is ever needed to notice a
-    /// sensor change, which is the whole point on a ride-only/timed watch.
+    /// sensor change.
     public func receiveDirectAuthPins(_ pins: [String: String], phoneSensorID: String?) {
 #if os(watchOS)
         guard !pins.isEmpty else { return }
@@ -364,6 +346,9 @@ public class G7CGMManager: CGMManager {
             sensor.reacquireForNewSensor()
         } else if state.directAuthPins != before.directAuthPins {
             logDeviceCommunication("direct-auth: pairing codes updated from the phone (\(state.directAuthPins.count) sensor(s))", type: .connection)
+            // A code for the CURRENT sensor may have just arrived: the arm stood down without
+            // one ("not lodging"), and this is what re-arms it.
+            sensor.resumeScanning()
         }
 #endif
     }
@@ -465,6 +450,12 @@ extension G7CGMManager: G7SensorDelegate {
         logDeviceCommunication("direct-auth: pairing code VERIFIED for \(sensorName)", type: .connection)
     }
 
+    /// The watch acquisition arm's log line, into the host's device log (Pete's
+    /// omnipodLogDeviceEvent shape). Nothing produces it on the phone.
+    public func sensor(_ sensor: G7Sensor, logEvent line: String) {
+        logDeviceCommunication("[g7-watch] " + line, type: .connection)
+    }
+
     public func sensor(_ sensor: G7Sensor, didReceive extendedVersion: ExtendedVersionMessage) {
         mutateState { state in
             state.extendedVersion = extendedVersion
@@ -480,17 +471,24 @@ extension G7CGMManager: G7SensorDelegate {
 
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
-        if suspectedEndOfSession {
-            // Ride-only (mute record §3k): a join the sensor closes before auth completes is
-            // routine, not a session end — stock's forget-and-scan here put our scan into the
-            // sensor's tail twice on her line and the daemon wrote the −70 floor both times.
-            // Keep the identity; Dexcom's next link brings the reading.
-            if G7RidePolicy.shouldForgetOnBareDisconnect(rideOnly: G7RidePolicy.rideOnlyEnabled, adopted: state.sensorID != nil) {
-                scheduleScanAfterSuspectedSessionEnd()
-            } else {
-                logDeviceCommunication("ride-only: disconnect before auth — KEEPING \(state.sensorID ?? "sensor"), waiting for Dexcom's next link (no forget, no scan)", type: .connection)
-            }
+        guard suspectedEndOfSession else { return }
+#if os(watchOS)
+        // Loop's own handshake: the sensor closing before auth is a failed handshake, not a
+        // session end — a replacement sensor arrives by identity from the phone
+        // (receiveDirectAuthPins). Riding the Dexcom watch app (authentication OFF, ride-only):
+        // a join the sensor closes before Dexcom's auth completes is routine too, and stock's
+        // forget-and-scan here put our scan into the sensor's tail (mute record §3k). Either way
+        // the adoption is kept.
+        let keep = G7DirectAuth.enabled
+            || !G7RidePolicy.shouldForgetOnBareDisconnect(rideOnly: !G7DirectAuth.enabled, adopted: state.sensorID != nil)
+        if keep {
+            logDeviceCommunication("disconnect before auth — KEEPING \(state.sensorID ?? "sensor") (no forget, no scan)", type: .connection)
+        } else {
+            scheduleScanAfterSuspectedSessionEnd()
         }
+#else
+        scheduleScanAfterSuspectedSessionEnd()
+#endif
     }
 
     /// A disconnect before authentication usually means the session was stopped,

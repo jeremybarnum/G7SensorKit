@@ -184,13 +184,13 @@ extension G7PeripheralManager {
                 // partial inventory here on a link that D2W was using is the signature of the
                 // shared link dropping mid-discovery; a full-but-different inventory would mean
                 // wrong GATT. The bare error could not tell those apart (field 2026-08-08..10).
-                G7RadioCensus.sink?("unknownCharacteristic: service \(serviceUUID.uuidString.prefix(8)) MISSING on \(peripheral.name ?? "unnamed") — discovered: \(Self.gattInventory(peripheral))")
+                log.error("unknownCharacteristic: service %{public}@ MISSING on %{public}@ — discovered: %{public}@", String(serviceUUID.uuidString.prefix(8)), peripheral.name ?? "unnamed", Self.gattInventory(peripheral))
                 throw PeripheralManagerError.unknownCharacteristic
             }
 
             for characteristicUUID in characteristicUUIDs {
                 guard let characteristic = service.characteristics?.itemWithUUID(characteristicUUID) else {
-                    G7RadioCensus.sink?("unknownCharacteristic: char \(characteristicUUID.uuidString.prefix(8)) MISSING in service \(serviceUUID.uuidString.prefix(8)) on \(peripheral.name ?? "unnamed") — discovered: \(Self.gattInventory(peripheral))")
+                    log.error("unknownCharacteristic: char %{public}@ MISSING in service %{public}@ on %{public}@ — discovered: %{public}@", String(characteristicUUID.uuidString.prefix(8)), String(serviceUUID.uuidString.prefix(8)), peripheral.name ?? "unnamed", Self.gattInventory(peripheral))
                     throw PeripheralManagerError.unknownCharacteristic
                 }
 
@@ -456,7 +456,7 @@ extension G7PeripheralManager: CBPeripheralDelegate {
             default: break
             }
         }
-        G7RadioCensus.sink?("[gatt] \(what) error on \(characteristic.uuid) — \(error.localizedDescription) (\(ns.domain)#\(ns.code))\(tag)")
+        log.error("[gatt] %{public}@ error on %{public}@ — %{public}@ (%{public}@#%d)%{public}@", what, characteristic.uuid.uuidString, error.localizedDescription, ns.domain, ns.code, tag)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {

@@ -14,6 +14,7 @@
 		52E3FDA77037CAA90B148F8A /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6E618AE1ECE9C6ECC245B1B /* openssl.xcframework */; };
 		5B36E01F3AAD401B179AFBEB /* G7DirectAuthStreams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB2804E542DED87AB0E17EF /* G7DirectAuthStreams.swift */; };
 		9A8443559AB7B827D49FA9DD /* G7DirectAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BE9AB5DEBB3D869B687567 /* G7DirectAuthSession.swift */; };
+		0284063411555D9EC19B20BF /* G7AuthProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE773D5A1759E02497DF9A84 /* G7AuthProvider.swift */; };
 		B60BB2E42BC649DA00D2BB39 /* Bundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60BB2E32BC649DA00D2BB39 /* Bundle.swift */; };
 		B66D1F6D2E6A803800471149 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B66D1F6C2E6A803800471149 /* Localizable.xcstrings */; };
 		B66D1F6F2E6A803800471149 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B66D1F6E2E6A803800471149 /* Localizable.xcstrings */; };
@@ -198,6 +199,7 @@
 		C19C9F4D29C91C4C00A6D3D0 /* LocalizedString.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizedString.swift; sourceTree = "<group>"; };
 		C1E7171F292D84FE00DA646F /* G7ProgressBarState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = G7ProgressBarState.swift; sourceTree = "<group>"; };
 		C5BE9AB5DEBB3D869B687567 /* G7DirectAuthSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = G7DirectAuthSession.swift; path = G7SensorKit/G7Auth/G7DirectAuthSession.swift; sourceTree = "<group>"; };
+		AE773D5A1759E02497DF9A84 /* G7AuthProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = G7AuthProvider.swift; path = G7SensorKit/G7Auth/G7AuthProvider.swift; sourceTree = "<group>"; };
 		E6E618AE1ECE9C6ECC245B1B /* openssl.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; name = openssl.xcframework; path = Frameworks/openssl.xcframework; sourceTree = "<group>"; };
 		EEC11DCBBDB6CBC48A888F97 /* G7AuthCerts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = G7AuthCerts.swift; path = G7SensorKit/G7Auth/G7AuthCerts.swift; sourceTree = "<group>"; };
 		FADE00000000000000000301 /* LoopKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = LoopKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -259,6 +261,7 @@
 				B21B6F67E76159BD5C89CB8A /* g7auth.h */,
 				9FB2804E542DED87AB0E17EF /* G7DirectAuthStreams.swift */,
 				C5BE9AB5DEBB3D869B687567 /* G7DirectAuthSession.swift */,
+				AE773D5A1759E02497DF9A84 /* G7AuthProvider.swift */,
 			);
 			name = G7Auth;
 			sourceTree = "<group>";
@@ -768,6 +771,7 @@
 				C045EDE4F227A65391766739 /* G7AuthCerts.swift in Sources */,
 				5B36E01F3AAD401B179AFBEB /* G7DirectAuthStreams.swift in Sources */,
 				9A8443559AB7B827D49FA9DD /* G7DirectAuthSession.swift in Sources */,
+				0284063411555D9EC19B20BF /* G7AuthProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

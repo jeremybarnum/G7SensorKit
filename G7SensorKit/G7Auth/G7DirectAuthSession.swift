@@ -15,7 +15,8 @@
 //  slot proven to coexist with an active phone (auth=1).
 //
 //  The watch's production acquisition path since 2026-09-13 (G7DirectAuth.enabled, default ON on
-//  watchOS); the G7Lab.directAuth key is the diagnostic override.
+//  watchOS); Diagnostics ▸ Sensor ▸ Authentication is the override. The fast path (stored shared
+//  key, AES challenge only) is unconditional.
 //
 
 import Foundation
@@ -156,7 +157,7 @@ final class G7DirectAuthSession: @unchecked Sendable {
             // stored shared key and reads). 7.0 s → ~1.2 s. A mismatch clears the key and the
             // full handshake runs on this same link.
             var fastDone = false
-            if G7DirectAuth.fastPath, let name = sensorName, let stored = G7DirectAuthKeyStore.load(for: name) {
+            if let name = sensorName, let stored = G7DirectAuthKeyStore.load(for: name) {
                 let started = Date()
                 log("[direct-auth] FAST PATH — stored key for \(name): AES challenge only, no J-PAKE, no certs")
                 do {
@@ -166,9 +167,16 @@ final class G7DirectAuthSession: @unchecked Sendable {
                     result.authByte = a; result.bondByte = b
                     fastDone = true
                     usedFastPath = true
-                } catch {
+                } catch let error as G7DirectAuthError where error.isAesRejection {
+                    // The sensor answered and refused the challenge: the key is wrong for it.
                     G7DirectAuthKeyStore.clear(for: name)
                     log("[direct-auth] fast path REJECTED (\(error)) — stored key cleared, full handshake on this link")
+                } catch {
+                    // A timeout, a dropped link or a notReady write is the WATCH, not the key.
+                    // Clearing here forced a full J-PAKE on the next burst, whose round-0 took
+                    // 1–5 s to send on the sleeping watch, the sensor hung up at ~3.5 s, and the
+                    // cascade began (58 of 77 handshakes, 2026-09-16). The key stays.
+                    log("[direct-auth] fast path did not complete (\(error)) — key kept; full handshake on this link")
                 }
             }
 
@@ -191,18 +199,10 @@ final class G7DirectAuthSession: @unchecked Sendable {
                 }
             }
 
-            let egv: [UInt8]
-            do {
-                egv = try await readEGV()
-            } catch {
-                // A fast-path auth the sensor then refuses glucose on must not be repeated
-                // forever: drop the key so the next connection runs the full exchange.
-                if fastDone, let name = sensorName {
-                    G7DirectAuthKeyStore.clear(for: name)
-                    log("[direct-auth] fast path: glucose read failed (\(error)) — stored key cleared, next connection runs the full handshake")
-                }
-                throw error
-            }
+            // A failed read after a successful fast auth ("encryption never established", a
+            // timeout, notReady) is the link or the watch, not the key: the sensor accepted the
+            // challenge. The key stays — see the fast-path catch above for what clearing it cost.
+            let egv = try await readEGV()
 
             // Bank the key for the next connection — only after a read succeeded on it, and only
             // if the Swift AES-8 reproduces the C side's answer under the exported key, so a

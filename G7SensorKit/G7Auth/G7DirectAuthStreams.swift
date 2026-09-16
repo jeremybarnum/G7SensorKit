@@ -23,6 +23,15 @@ enum G7DirectAuthError: Error, CustomStringConvertible {
     case unexpectedAuth(Int)
     case setup(String)
 
+    /// The sensor ANSWERED the AES challenge and refused it — the one failure that says the
+    /// stored key is wrong for this sensor. Everything else is the link or the watch.
+    var isAesRejection: Bool {
+        switch self {
+        case .aesVerifyFailed, .unexpectedAuth: return true
+        default: return false
+        }
+    }
+
     var description: String {
         switch self {
         case .timeout(let w):        return "timeout waiting for \(w)"

@@ -104,10 +104,8 @@ class G7SettingsViewModel: ObservableObject {
     }
 
     /// The watch pairing-code section is offered only when a paired watch has the companion app
-    /// installed (or the host app says so through G7DirectAuth.phoneEntryVisible); a phone without
-    /// the watch app sees exactly the stock screen.
+    /// installed; a phone without the watch app sees exactly the stock screen.
     var showsWatchDirectRead: Bool {
-        if let hook = G7DirectAuth.phoneEntryVisible { return hook() }
         guard WCSession.isSupported() else { return false }
         let session = WCSession.default
         return session.activationState == .activated && session.isPaired && session.isWatchAppInstalled

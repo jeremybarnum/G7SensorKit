@@ -111,12 +111,6 @@ enum G7AuthCrypto {
 
     /// The two embedded partner certs, exchanged during the 0x0B step.
     static let certs: [[UInt8]] = [G7AuthCerts.CERT0, G7AuthCerts.CERT1]
-
-    /// Smoke test that the static crypto links and initializes against the embedded certs.
-    /// Returns true if g7_init accepts the pin — proves the whole libg7auth+openssl link.
-    static func selfTestLinks(pin4: [UInt8] = [0x39, 0x31, 0x35, 0x31]) -> Bool {
-        return initPIN(pin4)
-    }
 }
 
 /// Per-sensor store of the J-PAKE shared key, so the next connection to a sensor we have

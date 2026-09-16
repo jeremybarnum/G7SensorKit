@@ -35,10 +35,15 @@ public protocol G7SensorDelegate: AnyObject {
     /// Our own J-PAKE handshake authenticated against this sensor with the stored pairing code —
     /// the code is now known-good. Optional; only G7CGMManager records it.
     func sensor(_ sensor: G7Sensor, directAuthVerified sensorName: String)
+
+    /// One line from the watch acquisition arm for the host's device log. Optional; only the
+    /// watch produces it.
+    func sensor(_ sensor: G7Sensor, logEvent line: String)
 }
 
 public extension G7SensorDelegate {
     func sensor(_ sensor: G7Sensor, directAuthVerified sensorName: String) {}
+    func sensor(_ sensor: G7Sensor, logEvent line: String) {}
 }
 
 public enum G7SensorError: Error {
@@ -114,13 +119,10 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
         bluetoothManager.delegate = self
     }
 
-    /// Re-acquire the SAME sensor without forgetting it — the user's "Reconnect CGM".
+#if os(watchOS)
+    /// Re-acquire the SAME sensor without forgetting it — the user's "Reconnect sensor".
     /// Contrast `scanForNewSensor`, which clears `sensorID` and rebuilds cold.
-    func recycleConnectForLab() { bluetoothManager.recycleConnectForLab() }
-    /// Timed, bounded connect experiment (see G7TimedConnect).
-    func setTimedConnect(_ on: Bool, seedAnchor: Date?) { bluetoothManager.setTimedConnect(on, seedAnchor: seedAnchor) }
-    /// Host runtime posture changed (keepalive acquired/released); see G7TimedConnect.runtimeAvailable.
-    func timedRuntimeDidChange() { bluetoothManager.timedRuntimeDidChange() }
+    func reconnect() { bluetoothManager.reconnect() }
 
     /// Adopt a sensor by identity handed over from the phone — no scan, no forget. The next
     /// acquisition pass then targets this name. Direct-auth new-sensor flow, 2026-09-12.
@@ -132,6 +134,7 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     func reacquireForNewSensor() {
         bluetoothManager.reacquireForNewSensor()
     }
+#endif
 
     public func scanForNewSensor() {
         self.sensorID = nil
@@ -158,7 +161,7 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     private func handleGlucoseMessage(message: G7GlucoseMessage, peripheralManager: G7PeripheralManager) {
         activationDate = Date().addingTimeInterval(-TimeInterval(message.messageTimestamp))
-        // The reading's own timestamp anchors the timed-connect grid (G7TimedConnect).
+        // The reading's own timestamp: the watch arm's miss clock and grid (G7WatchAcquisition).
         bluetoothManager.noteReading(at: Date().addingTimeInterval(-TimeInterval(message.age)))
         peripheralManager.perform { (peripheral) in
             self.log.default("Listening for backfill responses")
@@ -217,6 +220,7 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     // MARK: - BluetoothManagerDelegate
 
+#if os(watchOS)
     /// Direct auth (our own J-PAKE) authenticated the link. The stock observer never saw that
     /// exchange, so clear its pending-auth here — otherwise the sensor's routine hang-up seconds
     /// later reads as `suspectedEndOfSession` and the reading path is treated as unauthenticated.
@@ -229,6 +233,12 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
             delegateQueue.async { self.delegate?.sensor(self, directAuthVerified: name) }
         }
     }
+
+    /// The watch acquisition arm's log line, forwarded to the host on the delegate queue.
+    func bluetoothManager(_ manager: G7BluetoothManager, logEvent line: String) {
+        delegateQueue.async { self.delegate?.sensor(self, logEvent: line) }
+    }
+#endif
 
     func bluetoothManager(_ manager: G7BluetoothManager, readied peripheralManager: G7PeripheralManager) -> Bool {
         var shouldStopScanning = false;
