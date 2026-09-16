@@ -883,11 +883,11 @@ extension G7BluetoothManager {
             // A link we cannot authenticate is one the sensor closes unencrypted ~10 s later — a
             // tally count every burst for nothing. Stand down; the code's arrival re-arms
             // (G7CGMManager.receivePairingCode → resumeScanning).
-            G7DirectAuth.needsCodeFor = peripheral.name
+            G7WatchDirectRead.needsCodeFor = peripheral.name
             watchLog("no pairing code for \(peripheral.name ?? "sensor") — not lodging")
             return
         }
-        G7DirectAuth.needsCodeFor = nil
+        G7WatchDirectRead.needsCodeFor = nil
         lodged = true; lodgedAt = Date()
         let options = startDelay.map { [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: $0)] }
         centralManager.connect(peripheral, options: options)
@@ -994,34 +994,19 @@ extension G7BluetoothManager {
 }
 #endif
 
-/// DIRECT READ on the watch — Loop's own handshake (`G7Authenticator`, session mode `.direct`)
-/// so the watch reads glucose with no Dexcom app present. Default ON on watchOS since
-/// 2026-09-13; the sensor's pairing code is entered once on the phone and rides to the watch in
-/// the context. OFF = `.eavesdropping`: ride whatever the Dexcom watch app authenticates.
-public enum G7DirectAuth {
-    /// Diagnostics ▸ Sensor ▸ Authentication. ON = Loop's own handshake; OFF = ride the Dexcom
-    /// watch app (the arm still lodges its request, starts no handshake, and the stock passive
-    /// observer reads whatever Dexcom's app authenticates).
-    public static let key = "G7Lab.directAuth"
+/// DIRECT READ on the watch — Loop's own handshake (`G7Authenticator`, session mode `.direct`),
+/// so the watch reads glucose with no Dexcom app present. The sensor's pairing code is entered
+/// once on the phone and rides to the watch inside the context's cgmManagerState.
+public enum G7WatchDirectRead {
     /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
-    public static let needsCodeKey = "G7Lab.directAuth.needsCode"
+    public static let needsCodeKey = "G7Lab.watchDirectRead.needsCode"
     /// The display slot the watch takes at authentication (`G7DisplayType`). Raw value 0x01 is
     /// the one PROVEN to coexist with the phone's Dexcom app (auth=1 bond=1 with the phone
     /// active, 2026-09-11 onward); Pete's table names it `.medical` and reserves `.watch` (3)
     /// by inference from DexKit — untested on the air by us. Try `.watch` in a controlled burst
     /// before changing this.
-    public static let watchDisplayType: G7DisplayType = .medical
-    /// WATCH: ON by default since 2026-09-13 — the watch reads the sensor with its own handshake
-    /// (no Dexcom watch app). PHONE: OFF — the phone keeps stock acquisition.
-    public static var enabled: Bool {
-        if let v = UserDefaults.standard.object(forKey: key) as? Bool { return v }
-        #if os(watchOS)
-        return true
-        #else
-        return false
-        #endif
-    }
+    public static let displayType: G7DisplayType = .medical
 
     public static var needsCodeFor: String? {
         get { UserDefaults.standard.string(forKey: needsCodeKey) }

@@ -267,8 +267,10 @@ public class G7CGMManager: CGMManager {
     public required convenience init?(rawState: RawStateValue) {
         var state = G7CGMManagerState(rawValue: rawState)
 #if os(watchOS)
-        state.sessionMode = G7CGMManager.watchSessionMode(for: state)
-        let displayType = G7DirectAuth.watchDisplayType
+        // The watch always reads directly: with no Dexcom app on the phone there is no session
+        // to eavesdrop on. Without a code the arm stands down until one arrives from the phone.
+        state.sessionMode = .direct
+        let displayType = G7WatchDirectRead.displayType
 #else
         let displayType = G7DisplayType.phone
 #endif
@@ -304,12 +306,6 @@ public class G7CGMManager: CGMManager {
 #if os(watchOS)
     // MARK: - Watch direct read (the pairing code arrives from the phone)
 
-    /// Direct when Loop's own handshake is enabled and the sensor's code (or a key derived from
-    /// it) is held; otherwise ride the Dexcom watch app's session.
-    static func watchSessionMode(for state: G7CGMManagerState) -> G7SessionMode {
-        G7DirectAuth.enabled && (state.pairingCode != nil || state.sharedKey != nil) ? .direct : .eavesdropping
-    }
-
     /// The phone's cgmManagerState arrived in a context: its current sensor and that sensor's
     /// pairing code (entered on the phone). A new sensor is adopted by identity — no scan of our
     /// own is needed to notice a sensor change; a code for the current sensor re-arms the arm.
@@ -325,26 +321,19 @@ public class G7CGMManager: CGMManager {
                 state.activatedAt = nil
                 state.extendedVersion = nil
                 state.transmitterVersion = nil
-                state.sessionMode = G7CGMManager.watchSessionMode(for: state)
+                state.sessionMode = .direct
             }
-            sensor.reconfigure(mode: state.sessionMode, credentials: state.sensorCredentials)
+            sensor.reconfigure(mode: .direct, credentials: state.sensorCredentials)
             sensor.reacquireForNewSensor()
         } else if let code, code != before.pairingCode, phoneSensorID == before.sensorID || before.sensorID == nil {
             logDeviceCommunication("direct-read: pairing code for \(before.sensorID ?? "the sensor") received from the phone", type: .connection)
             mutateState { state in
                 state.pairingCode = code
-                state.sessionMode = G7CGMManager.watchSessionMode(for: state)
+                state.sessionMode = .direct
             }
-            sensor.reconfigure(mode: state.sessionMode, credentials: state.sensorCredentials)
+            sensor.reconfigure(mode: .direct, credentials: state.sensorCredentials)
             sensor.resumeScanning()
         }
-    }
-
-    /// Diagnostics ▸ Sensor ▸ Authentication changed: recompute the mode and re-arm.
-    public func applyWatchDirectReadSetting() {
-        mutateState { state in state.sessionMode = G7CGMManager.watchSessionMode(for: state) }
-        sensor.reconfigure(mode: state.sessionMode, credentials: state.sensorCredentials)
-        sensor.resumeScanning()
     }
 
     /// The user's "Reconnect sensor": drop the link or the lodged request and run one bootstrap
@@ -870,15 +859,9 @@ extension G7CGMManager: G7SensorDelegate {
 
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
-        guard suspectedEndOfSession else { return }
-#if os(watchOS)
-        // Riding the Dexcom watch app: a join the sensor closes before Dexcom's auth completes is
-        // routine, and stock's grace-period scan here put our scan into the sensor's tail (mute
-        // record §3k). The adoption is kept; the arm re-lodges on the close.
-        logDeviceCommunication("disconnect before auth — KEEPING \(state.sensorID ?? "sensor") (no grace scan)", type: .connection)
-#else
-        scheduleScanAfterSuspectedSessionEnd()
-#endif
+        if suspectedEndOfSession {
+            scheduleScanAfterSuspectedSessionEnd()
+        }
     }
 
     /// The watch acquisition arm's log line, into the host's device log (Pete's
