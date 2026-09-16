@@ -859,6 +859,14 @@ extension G7CGMManager: G7SensorDelegate {
 
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
+#if os(watchOS)
+        // Slot experiment: the next connection presents the slot for the current two-hour block.
+        let slot = G7WatchDirectRead.displayType
+        if sensor.displayType != slot {
+            logDeviceCommunication("[g7-watch] slot block → display type \(slot) for the next connection", type: .connection)
+            sensor.displayType = slot
+        }
+#endif
         if suspectedEndOfSession {
             scheduleScanAfterSuspectedSessionEnd()
         }

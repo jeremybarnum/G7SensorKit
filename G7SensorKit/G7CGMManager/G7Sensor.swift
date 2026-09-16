@@ -197,7 +197,8 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
 
     /// Which of the sensor's display slots this session takes: a phone by
     /// default; a watch app would take its own, alongside the phone's.
-    let displayType: G7DisplayType
+    /// Read at each authentication; the watch's slot experiment rewrites it between connections.
+    var displayType: G7DisplayType
 
     convenience init(mode: G7SessionMode, credentials: G7SensorCredentials, displayType: G7DisplayType = .phone) {
         self.init(mode: mode, credentials: credentials, bluetoothManager: G7BluetoothManager(), displayType: displayType)

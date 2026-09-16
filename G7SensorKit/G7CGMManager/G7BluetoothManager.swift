@@ -1001,14 +1001,16 @@ public enum G7WatchDirectRead {
     /// Set when a connect reached a sensor we have no code for; cleared as soon as one exists.
     /// Surfaced by the glance and the diagnostics screen — the user's cue to enter it on the phone.
     public static let needsCodeKey = "G7Lab.watchDirectRead.needsCode"
-    /// The display slot the watch takes at authentication (`G7DisplayType`). `.watch` (3) is
-    /// Pete's value for a watch app, by inference from DexKit; first tried on the air
-    /// 2026-09-16. `.medical` (raw 0x01) is the slot proven since 2026-09-11 to coexist with
-    /// the phone's Dexcom app (auth=1 bond=1 with the phone active) and on Pete's code the
-    /// same day — the fallback if the sensor refuses 3. Changing the slot invalidates the
-    /// stored key: the next connection fails its challenge, drops the key and pairs again
-    /// with the retained code.
-    public static let displayType: G7DisplayType = .watch
+    /// The display slot the watch takes at authentication (`G7DisplayType`). EXPERIMENT
+    /// (2026-09-16, passive, overnight): alternate by wall-clock two-hour block — even blocks
+    /// `.medical` (raw 0x01, xDrip's "alternate" slot, the one its Wear collector uses beside
+    /// the phone; proven here since 2026-09-11), odd blocks `.watch` (3, the value Pete's
+    /// DexKit-derived table gives a watch app). The stored key survives a slot change (seen
+    /// 18:16), so the switch costs nothing; each challenge line names the slot it used. Read
+    /// the per-slot burst hit rate and link-up lateness, then pin one value and delete this.
+    public static var displayType: G7DisplayType {
+        (Calendar.current.component(.hour, from: Date()) / 2) % 2 == 0 ? .medical : .watch
+    }
 
     public static var needsCodeFor: String? {
         get { UserDefaults.standard.string(forKey: needsCodeKey) }
