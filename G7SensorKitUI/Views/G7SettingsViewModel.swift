@@ -102,6 +102,9 @@ class G7SettingsViewModel: ObservableObject {
         return ok
     }
 
+    /// The watch pairing-code section is offered only when the host app says the watch feature is present.
+    var showsWatchDirectRead: Bool { G7DirectAuth.phoneEntryVisible?() ?? false }
+
     /// Settings-row text for the pairing-code state.
     var directAuthCodeStatusText: String {
         switch directAuthCodeStatus {

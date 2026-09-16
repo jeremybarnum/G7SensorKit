@@ -129,15 +129,17 @@ struct G7SettingsView: View {
             // own J-PAKE when the phone is away. Entered once per sensor; the code is shown in
             // the Dexcom app (the button below opens it). "verified" means the watch's
             // handshake has succeeded with it; "saved" means it has not yet had the chance.
-            Section(header: Text("Watch Direct Read"),
-                    footer: Text("The watch reads this sensor itself when your phone isn't there. Enter the sensor's 4-digit pairing code once — it's shown in the Dexcom app.")) {
-                LabeledValueView(label: "Sensor", value: viewModel.sensorName ?? "—")
-                LabeledValueView(label: "Pairing code", value: viewModel.directAuthCodeStatusText)
-                HStack {
-                    TextField("4-digit code", text: $viewModel.directAuthCodeEntry)
-                        .keyboardType(.numberPad)
-                    Button("Save") { viewModel.saveDirectAuthCode() }
-                        .disabled(viewModel.sensorName == nil || viewModel.directAuthCodeEntry.filter { $0.isNumber }.count != 4)
+            if viewModel.showsWatchDirectRead {
+                Section(header: Text("Watch Direct Read"),
+                        footer: Text("The watch reads this sensor itself when your phone isn't there. Enter the sensor's 4-digit pairing code once — it's shown in the Dexcom app.")) {
+                    LabeledValueView(label: "Sensor", value: viewModel.sensorName ?? "—")
+                    LabeledValueView(label: "Pairing code", value: viewModel.directAuthCodeStatusText)
+                    HStack {
+                        TextField("4-digit code", text: $viewModel.directAuthCodeEntry)
+                            .keyboardType(.numberPad)
+                        Button("Save") { viewModel.saveDirectAuthCode() }
+                            .disabled(viewModel.sensorName == nil || viewModel.directAuthCodeEntry.filter { $0.isNumber }.count != 4)
+                    }
                 }
             }
 

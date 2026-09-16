@@ -297,7 +297,9 @@ public class G7CGMManager: CGMManager {
     /// Direct-auth crypto link/self-test (Stage 1). Initializes the embedded J-PAKE/OpenSSL
     /// crypto with a pin and returns whether g7_init accepted it — proving libg7auth + openssl
     /// are statically linked into this build. No Bluetooth, no sensor contact.
+#if os(watchOS)
     public func directAuthCryptoSelfTest(pin4: [UInt8]) -> Bool { G7AuthCrypto.selfTestLinks(pin4: pin4) }
+#endif
 
     // MARK: - Direct auth pairing codes (entered once per sensor on the phone; ride to the watch
     // inside the context's cgmManagerState, which the phone already sends every update)

@@ -232,8 +232,10 @@ class G7BluetoothManager: NSObject {
     private var timedCancelTimer: DispatchSourceTimer?
     private var timedIssuedAt: Date?
 
-    // MARK: - Direct auth (our own J-PAKE; see G7DirectAuthSession)
+    // MARK: - Direct auth (our own J-PAKE; see G7DirectAuthSession) — watch target only
+#if os(watchOS)
     private var directAuthSession: G7DirectAuthSession?
+#endif
     /// Under timed connect there is one shot per grid cycle, so a handshake that dies (dropped
     /// chunk, early hang-up) would cost the whole reading. Allow ONE same-burst retry per cycle:
     /// the sensor keeps advertising after it hangs up, so a bounded connect ~1.5 s later lands.
@@ -1340,12 +1342,15 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
                     managerQueue_stopScanning()
                 }
             }
+#if os(watchOS)
             if G7DirectAuth.enabled, directAuthSession == nil {
                 managerQueue_startDirectAuth(peripheralManager, peripheral: peripheral)
             }
+#endif
         }
     }
 
+#if os(watchOS)
     /// Start our own J-PAKE handshake on the just-connected peripheral. Runs inside a perform so
     /// characteristic discovery has completed; the session drives writes through this manager and
     /// is fed inbound notifications by didUpdateValueFor. Diagnostic; gated by G7DirectAuth.enabled.
@@ -1427,6 +1432,7 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             }
         }
     }
+#endif
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         dispatchPrecondition(condition: .onQueue(managerQueue))
@@ -1461,7 +1467,9 @@ extension G7BluetoothManager: CBCentralManagerDelegate {
             managedPeripherals.removeValue(forKey: peripheral.identifier)
         }
 
+#if os(watchOS)
         directAuthSession?.cancel(); directAuthSession = nil
+#endif
 
         // A failed handshake deferred its retry to the real close — schedule it from here, timed
         // from this disconnect, in place of the next-grid arm (a retry miss re-arms the grid).
@@ -1621,9 +1629,11 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 
         // Direct-auth handshake owns auth/data/control until it authenticates; then control
         // notifications fall through to the stock glucose path below.
+#if os(watchOS)
         if let session = directAuthSession, session.feed(characteristic.uuid, value) {
             return
         }
+#endif
 
         switch CGMServiceCharacteristicUUID(rawValue: characteristic.uuid.uuidString.uppercased()) {
         case .none, .communication?, .data?:
@@ -1669,6 +1679,10 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 /// per-sensor pairing code is entered once on the phone and rides to the watch in the context.
 public enum G7DirectAuth {
     public static let key = "G7Lab.directAuth"
+    /// Installed by the host app on the PHONE: whether the settings screen should offer the
+    /// watch pairing-code entry. Nil (stock) = never shown, so a phone without the watch app
+    /// sees exactly the stock screen.
+    public static var phoneEntryVisible: (() -> Bool)?
     /// Per-sensor pairing codes keyed by sensor name (DXCM…): the BLE layer's mirror of
     /// G7CGMManagerState.directAuthPins, installed by G7CGMManager (which also carries them
     /// phone→watch inside the context's cgmManagerState). A code only ever works with its own

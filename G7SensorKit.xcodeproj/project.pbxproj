@@ -7,19 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		175AD327B397F5D76F214203 /* G7AuthCerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC11DCBBDB6CBC48A888F97 /* G7AuthCerts.swift */; };
 		18326018BAD209A0DAB13103 /* G7AuthCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0007048152B24918A70DA9D9 /* G7AuthCrypto.swift */; };
 		1A8BF5190372F2479C8CB6B3 /* libg7auth.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A1816E611F9A9DF542B8727 /* libg7auth.xcframework */; };
-		2C81B6C4DD4EB17DAE75C753 /* g7auth.h in Headers */ = {isa = PBXBuildFile; fileRef = B21B6F67E76159BD5C89CB8A /* g7auth.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		3B0FD2A52D803BF100E5E921 /* LoopKitUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3B0FD2A42D803BF000E5E921 /* LoopKitUI.framework */; };
-		46300D421356BCC3887D2154 /* libg7auth.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A1816E611F9A9DF542B8727 /* libg7auth.xcframework */; };
-		492D8CD0A74C3FFAAC66308B /* G7AuthCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0007048152B24918A70DA9D9 /* G7AuthCrypto.swift */; };
 		4F88765A179FDFC090FF2B8A /* g7auth.h in Headers */ = {isa = PBXBuildFile; fileRef = B21B6F67E76159BD5C89CB8A /* g7auth.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		52E3FDA77037CAA90B148F8A /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6E618AE1ECE9C6ECC245B1B /* openssl.xcframework */; };
 		5B36E01F3AAD401B179AFBEB /* G7DirectAuthStreams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB2804E542DED87AB0E17EF /* G7DirectAuthStreams.swift */; };
-		6DF3EDD84B45FA4B3F938EBE /* G7DirectAuthStreams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB2804E542DED87AB0E17EF /* G7DirectAuthStreams.swift */; };
 		9A8443559AB7B827D49FA9DD /* G7DirectAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BE9AB5DEBB3D869B687567 /* G7DirectAuthSession.swift */; };
-		AEB87F34C610CBE59D2E96B6 /* G7DirectAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BE9AB5DEBB3D869B687567 /* G7DirectAuthSession.swift */; };
 		B60BB2E42BC649DA00D2BB39 /* Bundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60BB2E32BC649DA00D2BB39 /* Bundle.swift */; };
 		B66D1F6D2E6A803800471149 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B66D1F6C2E6A803800471149 /* Localizable.xcstrings */; };
 		B66D1F6F2E6A803800471149 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B66D1F6E2E6A803800471149 /* Localizable.xcstrings */; };
@@ -73,7 +67,6 @@
 		C17F5157291EBD9900555EB5 /* TimeInterval.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17F513F291EB27D00555EB5 /* TimeInterval.swift */; };
 		C19C9F4E29C91C4C00A6D3D0 /* LocalizedString.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19C9F4D29C91C4C00A6D3D0 /* LocalizedString.swift */; };
 		C1E71720292D84FE00DA646F /* G7ProgressBarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1E7171F292D84FE00DA646F /* G7ProgressBarState.swift */; };
-		EF62F96687229072F96BE078 /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6E618AE1ECE9C6ECC245B1B /* openssl.xcframework */; };
 		FADE00000000000000000310 /* G7SensorKit.h in Headers */ = {isa = PBXBuildFile; fileRef = C17F50C9291EAC3800555EB5 /* G7SensorKit.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		FADE00000000000000000311 /* LoopKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FADE00000000000000000301 /* LoopKit.framework */; };
 		FADE00000000000000000312 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B66D1F6C2E6A803800471149 /* Localizable.xcstrings */; };
@@ -217,8 +210,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				3B0FD2A52D803BF100E5E921 /* LoopKitUI.framework in Frameworks */,
-				46300D421356BCC3887D2154 /* libg7auth.xcframework in Frameworks */,
-				EF62F96687229072F96BE078 /* openssl.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -438,7 +429,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				C17F50D5291EAC3800555EB5 /* G7SensorKit.h in Headers */,
-				2C81B6C4DD4EB17DAE75C753 /* g7auth.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -706,10 +696,6 @@
 				C17F50EB291EAC6500555EB5 /* G7Sensor.swift in Sources */,
 				C17F50F2291EAC6500555EB5 /* G7GlucoseMessage.swift in Sources */,
 				C17F50EE291EAC6500555EB5 /* G7PeripheralManager.swift in Sources */,
-				492D8CD0A74C3FFAAC66308B /* G7AuthCrypto.swift in Sources */,
-				175AD327B397F5D76F214203 /* G7AuthCerts.swift in Sources */,
-				6DF3EDD84B45FA4B3F938EBE /* G7DirectAuthStreams.swift in Sources */,
-				AEB87F34C610CBE59D2E96B6 /* G7DirectAuthSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -954,10 +940,6 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/Frameworks",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -971,10 +953,6 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.6;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lc++",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.loopkit.G7SensorKit;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SDKROOT = iphoneos;
@@ -998,10 +976,6 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/Frameworks",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1015,10 +989,6 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.6;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lc++",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.loopkit.G7SensorKit;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SDKROOT = iphoneos;
