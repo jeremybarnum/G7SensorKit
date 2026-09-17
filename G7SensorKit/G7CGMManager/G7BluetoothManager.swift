@@ -875,7 +875,23 @@ extension G7BluetoothManager {
         guard centralManager.state == .poweredOn, !lodged else { return }
         switch peripheral.state {
         case .connected:     return
-        case .connecting:    lodged = true; lodgedAt = lodgedAt ?? Date(); return   // already with the daemon (restored launch)
+        case .connecting:
+            // NOT trusted. A request this process lodged sets `lodged`, and the guard above
+            // returns before reaching here — so a `.connecting` seen with `lodged == false` is
+            // a RESTORED snapshot, and on 2026-09-16 23:27 (an install killed the old process
+            // mid-hold; the daemon resurrected its zombie session) that snapshot said
+            // "connecting" while bluetoothd held NO request: eight hours with no link. Cancel
+            // whatever the daemon thinks it holds and lodge our own; the close/fail callback
+            // re-lodges through the arm, and the timer covers a cancel that produces no callback.
+            watchLog("restored as connecting with no request of ours — cancelling it and lodging a fresh connect")
+            centralManager.cancelPeripheralConnection(peripheral)
+            let id = peripheral.identifier
+            managerQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, !self.lodged,
+                      let p = self.centralManager.retrievePeripherals(withIdentifiers: [id]).first, p.state == .disconnected else { return }
+                self.managerQueue_lodge(p, startDelay: nil, why: "after cancelling a restored connect the daemon did not hold")
+            }
+            return
         case .disconnecting: return   // the close callback lodges: a connect issued during a cancel was lost inside CoreBluetooth (2026-09-14 21:12)
         default:             break
         }
