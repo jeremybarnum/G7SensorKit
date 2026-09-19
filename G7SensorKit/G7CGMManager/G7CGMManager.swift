@@ -1030,6 +1030,11 @@ extension G7CGMManager: G7SensorDelegate {
         mutateState { state in
             state.latestReading = message
             state.latestReadingTimestamp = latestReadingTimestamp
+#if os(watchOS)
+            // A sensor adopted by identity (receivePairingCode) never passes through discovery,
+            // the only other place this is latched. Without it every reading is named "invalid".
+            if state.activatedAt == nil { state.activatedAt = activationDate }
+#endif
         }
 
         guard let glucose = message.glucose else {
