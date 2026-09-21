@@ -1117,14 +1117,3 @@ public enum G7WatchAcquisition {
     }
 }
 
-/// What survives of ride-only (mute record §5): riding the Dexcom watch app is the OFF state of
-/// authentication, and the one policy it still needs is this. Pure so the bench can pin it.
-public enum G7RidePolicy {
-    /// Stock flags a REMOTE disconnect while auth is still pending as "suspected end of session"
-    /// and answers with forget-and-scan. Under ride-only a join the sensor closes before Dexcom's
-    /// auth completes is routine and would put our scan into the tail. Keep the identity; a real
-    /// replacement sensor arrives by identity from the phone.
-    public static func shouldForgetOnBareDisconnect(rideOnly: Bool, adopted: Bool) -> Bool {
-        !(rideOnly && adopted)
-    }
-}
