@@ -12,6 +12,8 @@ import SwiftUI
 import VisionKit
 
 /// Reads the GS1 Data Matrix on a sensor applicator with the camera.
+/// PRODUCTION COMPAT: VisionKit's scanner is iOS 16+; this line deploys to iOS 15.1.
+@available(iOS 16.0, *)
 struct G7PackageScannerView: UIViewControllerRepresentable {
     var didScan: (G7SensorPackage) -> Void
 

@@ -8,7 +8,7 @@
 
 import Foundation
 import G7SensorKit
-import LoopAlgorithm
+import HealthKit
 import LoopKit
 import LoopKitUI
 import WatchConnectivity
@@ -175,11 +175,14 @@ class G7SettingsViewModel: ObservableObject {
 
     /// The last reliable reading in mg/dL, for the calibration entry to
     /// compare against.
+    /// PRODUCTION COMPAT: this line's LoopKit keeps HKUnit.milligramsPerDeciliter internal.
+    private static let mgdlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
+
     var lastGlucoseMgdl: Double? {
         guard let lastReading = lastReading, lastReading.hasReliableGlucose, let quantity = lastReading.glucoseQuantity else {
             return nil
         }
-        return quantity.doubleValue(for: .milligramsPerDeciliter)
+        return quantity.doubleValue(for: Self.mgdlUnit)
     }
 
     /// The last trend in mg/dL/min, for the "is glucose stable" check.
@@ -190,7 +193,7 @@ class G7SettingsViewModel: ObservableObject {
         return lastReading.trend
     }
 
-    var glucoseUnit: LoopUnit {
+    var glucoseUnit: HKUnit {
         displayGlucosePreference.unit
     }
 
@@ -199,12 +202,12 @@ class G7SettingsViewModel: ObservableObject {
     }
 
     func formatGlucose(mgdl: Double, includeUnit: Bool = true) -> String {
-        displayGlucosePreference.format(LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: mgdl), includeUnit: includeUnit)
+        displayGlucosePreference.format(HKQuantity(unit: Self.mgdlUnit, doubleValue: mgdl), includeUnit: includeUnit)
     }
 
     /// A value typed in the display unit, as mg/dL.
     func mgdl(fromDisplayValue value: Double) -> Double {
-        LoopQuantity(unit: displayGlucosePreference.unit, doubleValue: value).doubleValue(for: .milligramsPerDeciliter)
+        HKQuantity(unit: displayGlucosePreference.unit, doubleValue: value).doubleValue(for: Self.mgdlUnit)
     }
 
     func calibrate(mgdl: Double) {

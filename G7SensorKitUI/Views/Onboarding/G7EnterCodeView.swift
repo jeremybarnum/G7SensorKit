@@ -12,6 +12,12 @@ import SwiftUI
 /// Collects the 4-digit pairing code, by typing or by scanning the
 /// applicator's Data Matrix.
 struct G7EnterCodeView: View {
+    /// PRODUCTION COMPAT: the applicator scanner is iOS 16+; on 15 the code is typed.
+    private static var scannerAvailable: Bool {
+        if #available(iOS 16.0, *) { return G7PackageScannerView.isAvailable }
+        return false
+    }
+
     var didEnterCode: (_ code: String, _ serial: String?) -> Void
 
     @State private var code = ""
@@ -51,7 +57,7 @@ struct G7EnterCodeView: View {
                 .background(Color(.secondarySystemBackground))
                 .cornerRadius(10)
                 .focused($codeFieldFocused)
-                .onChange(of: code) { _, newValue in
+                .onChange(of: code) { newValue in   // PRODUCTION COMPAT: iOS 14 form (15.1 target)
                     let digits = newValue.filter(\.isNumber)
                     let trimmed = String(digits.prefix(4))
                     if trimmed != newValue {
@@ -62,7 +68,7 @@ struct G7EnterCodeView: View {
                     }
                 }
 
-            if G7PackageScannerView.isAvailable {
+            if Self.scannerAvailable {
                 Button(action: scanTapped) {
                     Label(LocalizedString("Scan Applicator", comment: "Button title to scan the applicator barcode"), systemImage: "qrcode.viewfinder")
                         .frame(maxWidth: .infinity)
@@ -87,6 +93,7 @@ struct G7EnterCodeView: View {
         .padding()
         .onAppear { codeFieldFocused = true }
         .sheet(isPresented: $showingScanner) {
+            if #available(iOS 16.0, *) {
             NavigationView {
                 G7PackageScannerView { package in
                     showingScanner = false
@@ -96,6 +103,7 @@ struct G7EnterCodeView: View {
                 .navigationBarItems(trailing: Button(LocalizedString("Cancel", comment: "Button text to cancel G7 setup")) {
                     showingScanner = false
                 })
+            }
             }
         }
         .alert(

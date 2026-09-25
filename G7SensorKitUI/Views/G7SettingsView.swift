@@ -177,7 +177,7 @@ if viewModel.sessionMode == .eavesdropping {
         .sheet(isPresented: $showingCalibration) {
             G7CalibrationFlowView(viewModel: viewModel)
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { phase in   // PRODUCTION COMPAT: iOS 14 form (15.1 target)
             if phase == .active {
                 viewModel.refreshEnvironment()
             }
