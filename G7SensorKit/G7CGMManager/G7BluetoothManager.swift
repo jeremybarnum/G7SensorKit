@@ -1065,7 +1065,10 @@ public enum G7WatchAcquisition {
     public static let lead: TimeInterval = 5
     public static let missedBurstsBeforeBootstrap = 3
     /// One full window plus jitter: a scan pass that cannot span a burst proves nothing.
-    public static let bootstrapScanCap: TimeInterval = 330
+    /// PRODUCTION: settable so the host's sensor-setup session can hold one search across its
+    /// whole keepalive (two readings) instead of one; read when a pass starts.
+    public static var bootstrapScanCap: TimeInterval = 330
+    public static let defaultBootstrapScanCap: TimeInterval = 330
     /// Pete's heartbeatFailureBackoffSeconds.
     public static let refusalBackoffSeconds: TimeInterval = 30
     /// A didFailToConnect this soon after the call is the daemon declining the request itself.

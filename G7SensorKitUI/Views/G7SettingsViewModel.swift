@@ -167,6 +167,10 @@ class G7SettingsViewModel: ObservableObject {
         if ok {
             watchPairingCodeEntry = ""
             updateValues()
+            // PRODUCTION: the host sets up the watch from here (sends the code at once and launches
+            // the watch app for its first connection). Posted on every Save, same code included;
+            // the phone app is on screen, which is the only time it may launch the watch app.
+            NotificationCenter.default.post(name: Notification.Name("G7SensorKit.watchPairingCodeSaved"), object: nil)
         }
         return ok
     }
