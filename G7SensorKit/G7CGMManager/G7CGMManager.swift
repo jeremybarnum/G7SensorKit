@@ -618,19 +618,17 @@ extension G7CGMManager {
         default:
             logDeviceCommunication("Issuing alert \(alert.rawValue)", type: .connection)
         }
+        // PRODUCTION COMPAT: this line's AlertIssuer is synchronous; call it on the delegate
+        // queue (serial) rather than from a Task, which would run several alerts concurrently.
         delegate.notify { delegate in
-            Task {
-                await delegate?.issueAlert(loopAlert)
-            }
+            delegate?.issueAlert(loopAlert)
         }
     }
 
     private func retractLifecycleAlert(_ alert: G7LifecycleAlert) {
         let identifier = alert.identifier(managerIdentifier: Self.pluginIdentifier)
         delegate.notify { delegate in
-            Task {
-                await delegate?.retractAlert(identifier: identifier)
-            }
+            delegate?.retractAlert(identifier: identifier)   // PRODUCTION COMPAT: see issueLifecycleAlert
         }
     }
 
@@ -747,7 +745,7 @@ extension G7CGMManager: G7SensorDelegate {
                 let alert = Alert(identifier: Alert.Identifier(managerIdentifier: Self.pluginIdentifier, alertIdentifier: "directRead.codeNeeded"),
                                   foregroundContent: content, backgroundContent: content, trigger: .immediate)
                 delegate.notify { delegate in
-                    Task { await delegate?.issueAlert(alert) }
+                    delegate?.issueAlert(alert)   // PRODUCTION COMPAT: see issueLifecycleAlert
                 }
             }
 #endif
