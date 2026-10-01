@@ -578,7 +578,7 @@ class G7BluetoothManager: NSObject {
         dispatchPrecondition(condition: .onQueue(managerQueue))
 
 #if os(watchOS)
-        // #101 churn fix (2026-08-10 23:31:52-59): a discovery during a pending connect issued
+        // Churn fix (2026-08-10): a discovery during a pending connect issued
         // ANOTHER connect() and minted a fresh G7PeripheralManager per event (~10/s). A pending
         // connect is already doing everything a duplicate would; skip it.
         if peripheral.state == .connecting, managedPeripherals[peripheral.identifier] != nil {

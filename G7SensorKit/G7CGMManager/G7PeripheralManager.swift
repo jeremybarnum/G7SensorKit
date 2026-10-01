@@ -206,7 +206,7 @@ extension G7PeripheralManager {
 
         for (serviceUUID, characteristicUUIDs) in configuration.notifyingCharacteristics {
             guard let service = peripheral.services?.itemWithUUID(serviceUUID) else {
-                // FORK (#101): dump what discovery ACTUALLY returned before dying. An empty or
+                // Dump what discovery ACTUALLY returned before dying. An empty or
                 // partial inventory here on a link that D2W was using is the signature of the
                 // shared link dropping mid-discovery; a full-but-different inventory would mean
                 // wrong GATT. The bare error could not tell those apart (field 2026-08-08..10).
@@ -229,7 +229,7 @@ extension G7PeripheralManager {
         }
     }
 
-    /// FORK (#101): one-line GATT inventory — "svc(8chars):[char8,char8] | svc:[...]".
+    /// One-line GATT inventory — "svc(8chars):[char8,char8] | svc:[...]".
     /// nil services = discovery never completed at all.
     static func gattInventory(_ peripheral: CBPeripheral) -> String {
         guard let services = peripheral.services else { return "NO SERVICES (discovery incomplete)" }
