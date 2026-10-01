@@ -1094,9 +1094,10 @@ extension G7CGMManager: G7SensorDelegate {
 
         let remaining = graceStart.addingTimeInterval(suspectedSessionEndGracePeriod).timeIntervalSinceNow
         guard remaining > 0 else {
-            // The window elapsed while we were not running, with nothing heard since.
+            // The window elapsed while we were not running, with nothing heard since. The expiry
+            // decides as it would have live, so a passed manager keeps its sensor here too.
             logDeviceCommunication("Grace period for suspected session end expired while app was not running.", type: .connection)
-            scanForNewSensor()
+            handleSuspectedSessionEndGraceExpiry(graceStart: graceStart)
             return
         }
 

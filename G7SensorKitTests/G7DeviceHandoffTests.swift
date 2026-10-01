@@ -116,6 +116,17 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertNil(manager.state.suspectedSessionEndAt)
     }
 
+    func testAPassedSensorIsNotForgottenWhenItsGracePeriodEndedWhileNotRunning() {
+        var state = G7CGMManagerState.adopted(from: makeManager(state: phoneState).exportConfiguration().state)
+        state.suspectedSessionEndAt = Date(timeIntervalSinceNow: -3600)
+
+        let manager = makeManager(state: G7CGMManagerState(rawValue: state.rawValue))
+
+        XCTAssertEqual(manager.state.sensorID, sensorID, "a relaunch must not forget what the live expiry keeps")
+        XCTAssertEqual(manager.state.pairingCode, "1234")
+        XCTAssertNil(manager.state.suspectedSessionEndAt)
+    }
+
     func testDeletingAPassedConfigurationRecordsNoSensorEnd() {
         let manager = makeManager(state: G7CGMManagerState.adopted(from: makeManager(state: phoneState).exportConfiguration().state))
         let deleted = expectation(description: "deleted")
