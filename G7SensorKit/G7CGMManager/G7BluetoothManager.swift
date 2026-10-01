@@ -1045,12 +1045,9 @@ public enum G7WatchDirectRead {
 /// The watch's ONE acquisition design: a single daemon-held request per burst, re-lodged after
 /// each close. Pure, so WatchAppTests can pin it. The G7BluetoothManager extension above is the stateful half.
 public enum G7WatchAcquisition {
-    /// How the next request reaches the daemon after each reading.
-    /// `gridDelay`: a start delay aimed at the next reading, 298 − (now − bg_timestamp);
-    /// measured 1 in 4, the daemon serving a delayed connect 0.3–269 s late. `holdApp`: hold the
-    /// process 35 s after link-up, then a plain connect; 33 in 33, at 35 s of runtime per cycle.
-    /// `gridDelay` keeps its original raw value so stored values still decode.
-    public enum Relodge: String, CaseIterable { case gridDelay = "peteDelay", holdApp }
+    /// How the next request reaches the daemon after each reading: `gridDelay` aims a start delay at
+    /// the next reading (measured 1 in 4); `holdApp` holds 35 s after link-up, then connects (33 in 33).
+    public enum Relodge: String, CaseIterable { case gridDelay, holdApp }
     public static let relodge: Relodge = .holdApp
     /// Link-up → the ~3.5-s read, the sensor's close, and its 20–24-s advertising tail all sit inside
     /// 35 s. A request that lands after this never reconnects into the tail.
