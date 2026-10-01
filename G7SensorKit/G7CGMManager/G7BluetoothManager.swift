@@ -102,7 +102,7 @@ protocol G7BluetoothManagerDelegate: AnyObject {
     func peripheralDidDisconnect(_ manager: G7BluetoothManager, peripheralManager: G7PeripheralManager, wasRemoteDisconnect: Bool)
 
 #if os(watchOS)
-    /// One line from the watch acquisition arm for the host's device log (Pete's
+    /// One line from the watch acquisition arm for the host's device log (OmnipodKit's
     /// omnipodLogDeviceEvent shape): os_log alone never reaches the wrist's file log.
     func bluetoothManager(_ manager: G7BluetoothManager, logEvent line: String)
 
@@ -169,7 +169,7 @@ class G7BluetoothManager: NSObject {
     /// Exactly one daemon-held request in flight.
     private var lodged = false
     private var lodgedAt: Date?
-    /// Consecutive synchronous refusals (Pete: back off, stop after two).
+    /// Consecutive synchronous refusals (back off, stop after two).
     private var refusals = 0
     /// A hold-then-connect is running (the holdApp arm); its end lodges.
     private var holdPending = false
@@ -321,7 +321,7 @@ class G7BluetoothManager: NSObject {
     }
 
     /// A reading arrived (G7Sensor, every glucose message). Watch: stamps the arm's miss clock and
-    /// the grid the peteDelay re-lodge aims at — the reading's own sensor timestamp.
+    /// the grid the gridDelay re-lodge aims at — the reading's own sensor timestamp.
     func noteReading(at readingTimestamp: Date) {
 #if os(watchOS)
         managerQueue.async { self.lastReadingAt = readingTimestamp }
@@ -817,16 +817,16 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 #if os(watchOS)
 // MARK: - The watch acquisition arm
 //
-// Shape: Pete's issueDelayedConnectProbe (OmnipodKit/Bluetooth/BluetoothManager.swift): one
+// Shape: OmnipodKit's issueDelayedConnectProbe (OmnipodKit/Bluetooth/BluetoothManager.swift): one
 // daemon-held connect, one in flight (`lodged` ≙ delayedProbeInFlight), a synchronously refused
 // connect backs off heartbeatFailureBackoffSeconds and re-checks state, and the central opts into
 // restoration so watchOS relaunches us for the link. Deviations, each tied to a measurement:
 //  • how the next request reaches the daemon after each reading is the Diagnostics page's
-//    Re-lodge arm (G7WatchAcquisition.relodge). `peteDelay` hands the daemon a start delay
-//    aimed at the next reading — 298 − (now − bg_timestamp), his formula (measured 1 in 4: the
+//    Re-lodge arm (G7WatchAcquisition.relodge). `gridDelay` hands the daemon a start delay
+//    aimed at the next reading — 298 − (now − bg_timestamp) (measured 1 in 4: the
 //    daemon services a delayed connect 0.3–269 s late). `holdApp` holds the process 35 s after
 //    link-up and then lodges a plain connect (33 in 33, at 35 s of held runtime per cycle — the
-//    one thing his design forbids). The sensor closes the link ~3.5 s after the 0x4E read and
+//    one thing the OmnipodKit design avoids). The sensor closes the link ~3.5 s after the 0x4E read and
 //    advertises 20–24 s after that (sniffer); a request the daemon holds past +35 s never
 //    reconnects into that tail. Reconnecting into it produced reason-762 failures, five of which
 //    park bluetoothd's −70 dBm floor on the SHARED accept-list entry.
@@ -844,12 +844,12 @@ extension G7BluetoothManager {
 
     fileprivate func watchLog(_ line: String) {
         log.default("[g7-watch] %{public}@", line)
-        delegate?.bluetoothManager(self, logEvent: line)      // → G7Sensor → G7CGMManager.logDeviceCommunication (Pete's omnipodLogDeviceEvent shape)
+        delegate?.bluetoothManager(self, logEvent: line)      // → G7Sensor → G7CGMManager.logDeviceCommunication (OmnipodKit's omnipodLogDeviceEvent shape)
     }
 
     /// The stock scan entry on the watch. Runs at poweredOn, on G7Sensor.resumeScanning (the loop's
     /// fetch, the foreground, a pairing code arriving), after a forget, after the bootstrap cap. A
-    /// real wake resets Pete's stop-after-two.
+    /// real wake resets the stop-after-two.
     fileprivate func managerQueue_watchArm() {
         dispatchPrecondition(condition: .onQueue(managerQueue))
         guard centralManager.state == .poweredOn else { return }
@@ -905,7 +905,7 @@ extension G7BluetoothManager {
                 }
             }
         case nil:
-            // A wake past the clearance (holdApp), or peteDelay with no reading on record and the
+            // A wake past the clearance (holdApp), or gridDelay with no reading on record and the
             // tail long over: nothing to wait for, a plain request now.
             managerQueue_lodge(peripheral, startDelay: nil, why: "\(why) · \(arm.rawValue): nothing to wait for")
         }
@@ -1102,10 +1102,11 @@ public enum G7WatchDirectRead {
 /// WatchAppTests can pin it. The G7BluetoothManager extension above is the stateful half.
 public enum G7WatchAcquisition {
     /// How the next request reaches the daemon after each reading.
-    /// `peteDelay`: a start delay aimed at the next reading — Pete's 298 − (now − bg_timestamp);
+    /// `gridDelay`: a start delay aimed at the next reading, 298 − (now − bg_timestamp);
     /// measured 1 in 4, the daemon serving a delayed connect 0.3–269 s late. `holdApp`: hold the
     /// process 35 s after link-up, then a plain connect; 33 in 33, at 35 s of runtime per cycle.
-    public enum Relodge: String, CaseIterable { case peteDelay, holdApp }
+    /// `gridDelay` keeps its original raw value so stored values still decode.
+    public enum Relodge: String, CaseIterable { case gridDelay = "peteDelay", holdApp }
     public static let relodge: Relodge = .holdApp
     /// Link-up → the ~3.5-s read, the sensor's close, and its 20–24-s advertising tail all sit inside
     /// 35 s. A request that lands after this never reconnects into the tail.
@@ -1116,13 +1117,13 @@ public enum G7WatchAcquisition {
     /// The sensor starts advertising +2.0…+3.2 s after its reading's timestamp (61 cycles,
     /// 2026-09-12); grid point n is anchor + n·period + fireOffset.
     public static let fireOffset: TimeInterval = 3
-    /// Lead before the burst. Pete (2026-09-15 11:56): "target a couple seconds before the next
-    /// expected reading — delay = 298 − (now − bg_timestamp)". period + fireOffset − lead == 298.
+    /// Lead before the burst: aim a couple of seconds before the next expected reading,
+    /// delay = 298 − (now − bg_timestamp). period + fireOffset − lead == 298.
     public static let lead: TimeInterval = 5
     public static let missedBurstsBeforeBootstrap = 3
     /// One full window plus jitter: a scan pass that cannot span a burst proves nothing.
     public static let bootstrapScanCap: TimeInterval = 330
-    /// Pete's heartbeatFailureBackoffSeconds.
+    /// OmnipodKit's heartbeatFailureBackoffSeconds.
     public static let refusalBackoffSeconds: TimeInterval = 30
     /// A didFailToConnect this soon after the call is the daemon declining the request itself.
     public static let synchronousRefusalWindow: TimeInterval = 2
@@ -1134,9 +1135,9 @@ public enum G7WatchAcquisition {
         while t <= now.addingTimeInterval(margin) { n += 1; t = anchor.addingTimeInterval(n * period + fireOffset) }
         return t
     }
-    /// Pete's start delay in whole seconds (a fractional or zero NSNumber is refused with CBError 1),
+    /// The grid start delay in whole seconds (a fractional or zero NSNumber is refused with CBError 1),
     /// never below 1: with the burst already here a delay would land after it.
-    public static func peteDelay(anchor: Date, now: Date) -> Int {
+    public static func gridDelay(anchor: Date, now: Date) -> Int {
         let seconds = nextFire(anchor: anchor, now: now).timeIntervalSince(now) - lead
         return max(1, Int(seconds.rounded()))
     }
@@ -1147,15 +1148,15 @@ public enum G7WatchAcquisition {
     public enum RelodgePlan: Equatable { case startDelay(seconds: Int), holdThenConnect(wait: TimeInterval) }
     /// nil = nothing to wait for: a plain request now. `anchor` is the last reading's sensor timestamp.
     public static func relodgePlan(_ arm: Relodge = relodge, sinceLinkUp: TimeInterval, anchor: Date?, now: Date = Date()) -> RelodgePlan? {
-        if arm == .peteDelay, let anchor = anchor {
-            return .startDelay(seconds: peteDelay(anchor: anchor, now: now))
+        if arm == .gridDelay, let anchor = anchor {
+            return .startDelay(seconds: gridDelay(anchor: anchor, now: now))
         }
-        // holdApp — and peteDelay with no reading on record, which has no grid to aim at: clear the
+        // holdApp — and gridDelay with no reading on record, which has no grid to aim at: clear the
         // tail the way the hold does rather than lodge a plain connect straight into it.
         return sinceLinkUp < tailClearanceSeconds ? .holdThenConnect(wait: holdWait(sinceLinkUp: sinceLinkUp)) : nil
     }
     public enum FailureAction: Equatable { case backOff(TimeInterval), standDown, relodge }
-    /// Pete's shape: a synchronous refusal backs off; two in a row stand down until the next wake.
+    /// As in OmnipodKit: a synchronous refusal backs off; two in a row stand down until the next wake.
     /// A late failure (the request went live and could not connect) re-lodges through the arm.
     public static func onConnectFailure(refusals: Int, sinceLodge: TimeInterval) -> (FailureAction, refusals: Int) {
         if sinceLodge < synchronousRefusalWindow {

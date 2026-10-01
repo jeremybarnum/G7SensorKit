@@ -1028,7 +1028,7 @@ extension G7CGMManager: G7SensorDelegate {
         }
     }
 
-    /// The watch acquisition arm's log line, into the host's device log (Pete's
+    /// The watch acquisition arm's log line, into the host's device log (OmnipodKit's
     /// omnipodLogDeviceEvent shape). Nothing produces it on the phone.
     public func sensor(_ sensor: G7Sensor, logEvent line: String) {
         logDeviceCommunication("[g7-watch] " + line, type: .connection)
