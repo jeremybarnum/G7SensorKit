@@ -316,10 +316,6 @@ public final class G7Sensor: G7BluetoothManagerDelegate {
     /// Re-acquire the SAME sensor without forgetting it — the user's "Reconnect sensor".
     /// Contrast `scanForNewSensor`, which clears the credentials and rebuilds cold.
     public func reconnect() { bluetoothManager.reconnect() }
-
-    /// A new sensor was adopted by identity from the phone (`reconfigure` carried its name and
-    /// code): drop the old peripheral and go find it.
-    public func reacquireForNewSensor() { bluetoothManager.reacquireForNewSensor() }
 #endif
 
     public func scanForNewSensor() {

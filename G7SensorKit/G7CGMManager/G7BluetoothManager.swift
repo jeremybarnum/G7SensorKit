@@ -340,18 +340,6 @@ class G7BluetoothManager: NSObject {
             if let p = activePeripheral, p.state != .disconnected { centralManager.cancelPeripheralConnection(p) }
         }
     }
-
-    /// The phone reported a NEW sensor we hold a code for (G7CGMManager.receivePairingCode):
-    /// forget the old one, find the new one.
-    func reacquireForNewSensor() {
-        managerQueue.async { [self] in
-            if let p = activePeripheral, p.state != .disconnected { centralManager.cancelPeripheralConnection(p) }
-            activePeripheralManager = nil            // clears the remembered id too (didSet)
-            lodged = false; lodgedAt = nil; linkUpAt = nil
-            lastBootstrapAt = nil
-            managerQueue_startBootstrapPass(reason: "new sensor from the phone")
-        }
-    }
 #endif
 
     /// Makes `peripheralManager` the active peripheral, keeping its connection,
@@ -939,8 +927,7 @@ extension G7BluetoothManager {
         }
         if let delegate, !delegate.bluetoothManagerCanAuthenticate(self) {
             // A link we cannot authenticate is one the sensor closes unencrypted ~10 s later — a
-            // tally count every burst for nothing. Stand down; the code's arrival re-arms
-            // (G7CGMManager.receivePairingCode → resumeScanning).
+            // tally count every burst for nothing. Stand down until a configuration brings a code.
             setWatchNeedsCodeFor(peripheral.name ?? "sensor")
             watchLog("no pairing code for \(peripheral.name ?? "sensor") — not lodging")
             return
