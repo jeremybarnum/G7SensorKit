@@ -307,8 +307,14 @@ public class G7CGMManager: CGMManager {
     /// DeviceConfigurationSharing: read the sensor another controller follows, directly.
     public required convenience init?(adopting configuration: SharedDeviceConfiguration) {
         let state = G7CGMManagerState.adopted(from: configuration.state)
-        self.init(state: state, sensor: G7Sensor(mode: .direct, credentials: state.sensorCredentials,
-                                                 displayType: G7CGMManager.defaultDisplayType))
+        self.init(adopted: state, sensor: G7Sensor(mode: .direct, credentials: state.sensorCredentials,
+                                                   displayType: G7CGMManager.defaultDisplayType))
+    }
+
+    /// Asks the sensor for its version, as a restored manager does, so the session length is known.
+    convenience init(adopted state: G7CGMManagerState, sensor: G7Sensor) {
+        self.init(state: state, sensor: sensor)
+        sensor.needsVersionInfo = state.extendedVersion == nil
     }
 
     /// Posted on the main queue when `watchNeedsCodeFor` or `watchIsSearching` changes; the object
@@ -602,6 +608,7 @@ extension G7CGMManager {
         // lifecycle and records belong to the controller that passed it.
         guard !state.configuredByAnotherController else {
             sensor.stopScanning()
+            retractAllLifecycleAlerts()
             notifyDelegateOfDeletion(completion: completion)
             return
         }

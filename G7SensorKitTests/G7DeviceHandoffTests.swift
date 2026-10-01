@@ -82,6 +82,13 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertFalse(makeManager(state: phoneState).isConfiguredByAnotherController)
     }
 
+    func testAnAdoptedManagerAsksTheSensorForItsVersion() {
+        let state = G7CGMManagerState.adopted(from: makeManager(state: phoneState).exportConfiguration().state)
+        let sensor = G7Sensor(mode: .direct, credentials: state.sensorCredentials, bluetoothManager: TestBluetoothManager())
+        let manager = G7CGMManager(adopted: state, sensor: sensor)
+        XCTAssertTrue(manager.sensor.needsVersionInfo, "the version carries the session length, as on a restore")
+    }
+
     func testAPassedConfigurationSurvivesARestore() throws {
         var adopted = G7CGMManagerState.adopted(from: makeManager(state: phoneState).exportConfiguration().state)
         adopted.sessionMode = .eavesdropping   // whatever was saved, a passed configuration reads directly
