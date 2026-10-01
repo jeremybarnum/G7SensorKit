@@ -836,8 +836,8 @@ extension G7BluetoothManager: G7PeripheralManagerDelegate {
 //    only the bootstrap pass and the refusal back-off ever issue one.
 //  • the handshake runs under performExpiringActivity: a relaunched app gets ~1–2 s, the full
 //    J-PAKE needs ~7 s (the fast path ~1.2 s).
-//  • two synchronous refusals stop re-lodging until the next real wake: the fork measured
-//    26,558 spin iterations in one wake before it had a guard.
+//  • two synchronous refusals stop re-lodging until the next real wake: an unguarded build
+//    measured 26,558 spin iterations in one wake.
 //  • with authentication OFF (ride the Dexcom watch app) the arm still lodges, but no handshake
 //    starts on connect: the stock passive observer reads whatever Dexcom's app authenticates.
 extension G7BluetoothManager {
@@ -861,7 +861,7 @@ extension G7BluetoothManager {
         }
         managerQueue_adopt(peripheral)
         // Three bursts with a request standing and nothing heard: the identifier is presumed
-        // stale (the fork's re-acquire pass, now only ever reached from a wake). A pass that found
+        // stale (the re-acquire pass, only ever reached from a wake). A pass that found
         // nothing restarts the count, so a sensor that is simply away is scanned for once per
         // three bursts, not back to back.
         let reference = [lastReadingAt, lastBootstrapAt].compactMap { $0 }.max()
@@ -1067,7 +1067,7 @@ extension G7BluetoothManager {
 /// once on the phone and rides to the watch inside the context's cgmManagerState.
 public enum G7WatchDirectRead {
     /// The display slot the watch declares at authentication (`G7DisplayType`): a watch. An
-    /// alternating experiment (2026-09-16/17, ~45 bursts as `.medical`, ~30 as `.watch`) found
+    /// alternating experiment (~45 bursts as `.medical`, ~30 as `.watch`) found
     /// no difference in burst hit rate or link-up lateness, and the stored key survives either
     /// slot — so the honest declaration it is.
     public static let displayType: G7DisplayType = .watch
@@ -1097,9 +1097,8 @@ public enum G7WatchDirectRead {
     }
 }
 
-/// The watch's ONE acquisition design (lean-out step 7, 2026-09-16): a single daemon-held request
-/// per burst, re-lodged after each close. Pure, so
-/// WatchAppTests can pin it. The G7BluetoothManager extension above is the stateful half.
+/// The watch's ONE acquisition design: a single daemon-held request per burst, re-lodged after
+/// each close. Pure, so WatchAppTests can pin it. The G7BluetoothManager extension above is the stateful half.
 public enum G7WatchAcquisition {
     /// How the next request reaches the daemon after each reading.
     /// `gridDelay`: a start delay aimed at the next reading, 298 − (now − bg_timestamp);
