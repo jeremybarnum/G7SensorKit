@@ -112,6 +112,8 @@ public final class G7WatchAcquisition: G7AcquisitionArm {
     /// that never comes (2026-10-05: a cancelled restored connect went unanswered for an hour) leaves
     /// nothing lodged and nothing scheduled to notice. A pass in progress already owns acquisition.
     func recheck() {
+        let state = manager.activePeripheral.map { String($0.state.rawValue) } ?? "none"
+        watchLog("re-check — lodged \(lodged), hold \(holdPending), pass \(bootstrapPass), peripheral state \(state)")
         guard !bootstrapPass else { return }
         scan()
     }
@@ -226,7 +228,11 @@ public final class G7WatchAcquisition: G7AcquisitionArm {
             let id = peripheral.identifier
             queue.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self, !self.lodged,
-                      let p = self.central.retrievePeripherals(withIdentifiers: [id]).first, p.state == .disconnected else { return }
+                      let p = self.central.retrievePeripherals(withIdentifiers: [id]).first else { return }
+                guard p.state == .disconnected else {
+                    self.watchLog("cancel not answered after 2 s — peripheral state \(p.state.rawValue); the next wake re-checks")
+                    return
+                }
                 self.lodge(p, why: "after cancelling a restored connect the daemon did not hold")
             }
             return

@@ -277,8 +277,12 @@ class G7BluetoothManager: NSObject {
     /// Re-derives the watch's acquisition from the central's own state on a wake; nothing on the phone.
     func recheckAcquisition() {
         managerQueue.async {
+            let peripheralState = self.activePeripheral?.state
             guard self.delegate != nil, self.centralManager.state == .poweredOn,
-                  (self.activePeripheral?.state ?? .disconnected) != .connected else { return }
+                  (peripheralState ?? .disconnected) != .connected else {
+                self.delegate?.bluetoothManager(self, logEvent: "[g7-watch] re-check skipped — central \(self.centralManager.state.rawValue), peripheral \(peripheralState.map { String($0.rawValue) } ?? "none")")
+                return
+            }
             self.acquisitionArm?.recheck()
         }
     }
