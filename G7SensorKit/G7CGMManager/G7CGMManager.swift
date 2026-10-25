@@ -77,6 +77,8 @@ public class G7CGMManager: CGMManager {
     /// build may have left scheduled. Done on the first reading, when the
     /// delegate is known to be set.
     private var didRetractLegacySignalLoss = false
+    /// The unfinished-pairing alert is up; retracted at the next reading.
+    private var pairingUnfinishedAlertPending = false
 
     /// Sends readings to Dexcom Share while an account is signed in.
     private var shareUploader: G7ShareUploader?
@@ -338,6 +340,15 @@ public class G7CGMManager: CGMManager {
     // MARK: - The pairing code another controller needs (entered here; travels in the export)
 
     public enum WatchPairingCodeStatus: Equatable { case noSensor, needsCode, saved }
+
+    /// The Read on Apple Watch setting: the host passes this sensor to its watch only while it is on.
+    public var isWatchDirectReadEnabled: Bool { state.watchDirectReadEnabled }
+
+    public func setWatchDirectReadEnabled(_ enabled: Bool) {
+        guard enabled != state.watchDirectReadEnabled else { return }
+        mutateState { $0.watchDirectReadEnabled = enabled }
+        logDeviceCommunication("direct-read: Read on Apple Watch turned \(enabled ? "on" : "off")", type: .connection)
+    }
 
     /// The current sensor's code state, for the settings row. The phone keeps its own session
     /// mode; the code is what the watch needs to read this sensor when the phone is away.
@@ -841,9 +852,9 @@ extension G7CGMManager: G7SensorDelegate {
             scheduleSessionTimedAlerts()
             if watchCodeToReplace {
                 let content = Alert.Content(
-                    title: "New sensor \(name)",
-                    body: "Enter its pairing code in Loop ▸ Dexcom G7 so the watch can read it without your phone. The code is shown in the Dexcom app.",
-                    acknowledgeActionButtonLabel: "OK")
+                    title: String(format: LocalizedString("New Sensor %1$@", comment: "Alert title asking for a new G7's pairing code for the watch (1: sensor name)"), name),
+                    body: LocalizedString("Enter its pairing code in the Dexcom G7 settings so the watch can read it without your phone. The code is shown in the Dexcom app.", comment: "Alert body asking for a new G7's pairing code for the watch"),
+                    acknowledgeActionButtonLabel: LocalizedString("OK", comment: "Alert acknowledgment button label"))
                 let alert = Alert(identifier: Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: "directRead.codeNeeded"),
                                   foregroundContent: content, backgroundContent: content, trigger: .immediate)
                 delegate.notify { delegate in
@@ -883,6 +894,12 @@ extension G7CGMManager: G7SensorDelegate {
         mutateState { state in
             state.sharedKey = nil
         }
+    }
+
+    public func sensorPairingDidNotFinish(_ sensor: G7Sensor) {
+        logDeviceCommunication("The last pairing did not finish (its Bluetooth bond was never confirmed); the next connection pairs again, with the app open", type: .connection)
+        pairingUnfinishedAlertPending = true
+        issueLifecycleAlert(.pairingUnfinished)
     }
 
     public func sensor(_ sensor: G7Sensor, didReceive transmitterVersion: TransmitterVersionMessage) {
@@ -1000,12 +1017,35 @@ extension G7CGMManager: G7SensorDelegate {
 
     /// Hands a meter glucose (mg/dL, taken at `date`) to the sensor on its
     /// next connection. Replaces any calibration still waiting.
+    /// The value is also emitted right away as a user-entered glucose
+    /// sample, timestamped when it was taken, whatever the sensor decides.
     public func calibrate(glucose: UInt16, at date: Date = Date()) {
         logDeviceCommunication("Calibration \(glucose) mg/dL entered; queued for the sensor's next connection", type: .connection)
         mutateState { state in
             state.calibration = G7CalibrationRecord(glucose: glucose, enteredAt: date)
         }
         sensor.calibrate(glucose: glucose, at: date)
+        updateDelegate(with: .newData([calibrationSample(glucose: glucose, date: date)]))
+    }
+
+    /// The entered meter value as a user-entered sample, at the time it was taken.
+    private func calibrationSample(glucose: UInt16, date: Date) -> NewGlucoseSample {
+        NewGlucoseSample(
+            date: date,
+            quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(min(max(glucose, GlucoseLimits.minimum), GlucoseLimits.maximum))),
+            condition: nil,
+            trend: nil,
+            trendRate: nil,
+            isDisplayOnly: false,
+            wasUserEntered: true,
+            syncIdentifier: calibrationSyncIdentifier(glucose: glucose, date: date),
+            device: device
+        )
+    }
+
+    /// Its own namespace, so a calibration never dedup-collides with a sensor reading.
+    private func calibrationSyncIdentifier(glucose: UInt16, date: Date) -> String {
+        "calibration \(state.sensorID ?? "unknown") \(date.timeIntervalSince1970) \(glucose)"
     }
 
     public func cancelPendingCalibration() {
@@ -1211,6 +1251,10 @@ extension G7CGMManager: G7SensorDelegate {
             }
             retractLifecycleAlert(.connectionRefused)
         }
+        if pairingUnfinishedAlertPending {
+            pairingUnfinishedAlertPending = false
+            retractLifecycleAlert(.pairingUnfinished)
+        }
         if !didRetractLegacySignalLoss {
             didRetractLegacySignalLoss = true
             retractLifecycleAlert(.signalLoss)
@@ -1282,7 +1326,8 @@ extension G7CGMManager: G7SensorDelegate {
                 trend: message.trendType,
                 trendRate: message.trendRate,
                 isDisplayOnly: message.glucoseIsDisplayOnly,
-                wasUserEntered: message.glucoseIsDisplayOnly,
+                // user-entered marks a manual entry; this is a device reading.
+                wasUserEntered: false,
                 syncIdentifier: generateSyncIdentifier(timestamp: message.glucoseTimestamp),
                 device: device
             )
@@ -1344,7 +1389,7 @@ extension G7CGMManager: G7SensorDelegate {
                 trend: entry.trendType,
                 trendRate: entry.trendRate,
                 isDisplayOnly: entry.glucoseIsDisplayOnly,
-                wasUserEntered: entry.glucoseIsDisplayOnly,
+                wasUserEntered: false,
                 syncIdentifier: generateSyncIdentifier(timestamp: entry.timestamp),
                 device: device,
                 isBackfill: true
@@ -1419,5 +1464,8 @@ extension G7CGMManager: DeviceConfigurationSharing {
     public func exportConfiguration() -> SharedDeviceConfiguration {
         SharedDeviceConfiguration(managerIdentifier: pluginIdentifier, asOf: Date(), state: state.sharedState)
     }
+
+    /// The user's Read on Apple Watch setting.
+    public var isConfigurationSharingEnabled: Bool { isWatchDirectReadEnabled }
 
 }
