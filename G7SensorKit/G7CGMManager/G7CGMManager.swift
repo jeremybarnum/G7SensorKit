@@ -8,7 +8,6 @@
 
 import Foundation
 import HealthKit
-import LoopAlgorithm
 import LoopKit
 import os.log
 
@@ -926,17 +925,6 @@ extension G7CGMManager: G7SensorDelegate {
             lastErrorAt: state.shareLastErrorAt,
             pendingCount: shareUploader?.status.pendingCount ?? 0
         )
-    }
-
-    /// A client for the signed-in account, for managing followers.
-    public var shareClient: G7ShareClient? {
-        G7ShareCredentialStore().load().map { credentials in
-            let client = G7ShareClient(credentials: credentials)
-            client.logHandler = { [weak self] message in
-                self?.logDeviceCommunication("Dexcom Share: " + message, type: .connection)
-            }
-            return client
-        }
     }
 
     /// Verifies the credentials with the service, keeps them, and starts
