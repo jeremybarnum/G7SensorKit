@@ -135,6 +135,10 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
     /// The user wants the watch to read this sensor itself (the Read on Apple Watch setting).
     var watchDirectReadEnabled = false
 
+    /// Built from another controller's export: the sensor did not accept the pairing code passed in.
+    /// Cleared by an authentication or a reading; a new code builds a new manager.
+    var pairingCodeRejected = false
+
     init() {
     }
 
@@ -196,6 +200,7 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         self.suspectedSessionEndAt = rawValue["suspectedSessionEndAt"] as? Date
         self.configuredByAnotherController = rawValue["configuredByAnotherController"] as? Bool ?? false
         self.watchDirectReadEnabled = rawValue["watchDirectReadEnabled"] as? Bool ?? false
+        self.pairingCodeRejected = rawValue["pairingCodeRejected"] as? Bool ?? false
         // A manager passed its configuration reads directly: there is no session to eavesdrop on.
         // Without a code it stands down until a new configuration brings one.
         if configuredByAnotherController {
@@ -248,6 +253,9 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         }
         if configuredByAnotherController {
             rawValue["configuredByAnotherController"] = true
+        }
+        if pairingCodeRejected {
+            rawValue["pairingCodeRejected"] = true
         }
         return rawValue
     }

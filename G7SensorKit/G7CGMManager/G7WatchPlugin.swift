@@ -13,6 +13,15 @@ extension G7CGMManager {
     public var shortStatusNote: String? {
         G7WatchDirectRead.needsCodeNote(for: needsCodeForSensor) ?? G7WatchDirectRead.searchingNote(isSearchingForSensor)
     }
+
+    /// The watch has read the sensor by itself once it holds its own key: a manager built for another
+    /// sensor, or from a new code, starts without one.
+    public var directReadNeed: CGMDirectReadNeed? {
+        let state = self.state
+        guard state.configuredByAnotherController, state.sharedKey == nil else { return nil }
+        guard state.pairingCode != nil else { return .pairingCode }
+        return state.pairingCodeRejected ? .pairingCodeRejected : .firstConnection
+    }
 }
 
 /// The watch loads this kit at run time, as the phone loads its plugins: this is the bundle's principal class.
