@@ -299,8 +299,8 @@ public class G7CGMManager: CGMManager {
         sensor.needsVersionInfo = state.extendedVersion == nil || state.transmitterVersion == nil
     }
 
-    /// Posted on the main queue when `needsCodeForSensor` or `isSearchingForSensor` changes; the
-    /// object is the manager.
+    /// Posted on the main queue when `needsCodeForSensor`, `isSearchingForSensor` or
+    /// `hasAuthenticatedDirectly` changes; the object is the manager.
     public static let statusDidChange = Notification.Name("G7CGMManagerStatusDidChange")
 
     /// The sensor a direct connection would reach without a pairing code or key; nil once one exists.
@@ -308,6 +308,13 @@ public class G7CGMManager: CGMManager {
 
     /// Scanning for a sensor this manager has never connected to.
     public var isSearchingForSensor: Bool { sensor.isSearchingForSensor }
+
+    /// Reading directly: this manager holds a pairing code or a key for its sensor.
+    public var canAuthenticateDirectly: Bool { state.sharedKey != nil || state.pairingCode != nil }
+
+    /// Reading directly: this manager has authenticated with its sensor itself. The key is its own
+    /// (never passed by another controller), so a manager built for a new sensor starts without one.
+    public var hasAuthenticatedDirectly: Bool { state.sharedKey != nil }
 
     /// Which of the sensor's display slots this app takes. A phone by
     /// default; a watch app takes its own, alongside the phone's.
@@ -875,6 +882,7 @@ extension G7CGMManager: G7SensorDelegate {
             state.lastAuthenticationFailure = nil
             state.lastAuthenticationFailureDate = nil
         }
+        sensorStatusDidChange(sensor)
     }
 
     public func sensor(_ sensor: G7Sensor, didAdoptPeripheral identifier: UUID?) {
@@ -894,6 +902,7 @@ extension G7CGMManager: G7SensorDelegate {
         mutateState { state in
             state.sharedKey = nil
         }
+        sensorStatusDidChange(sensor)
     }
 
     public func sensorPairingDidNotFinish(_ sensor: G7Sensor) {
