@@ -88,7 +88,7 @@ public class G7CGMManager: CGMManager {
     private let statusObservers = WeakSynchronizedSet<CGMManagerStatusObserver>()
 
     /// What status observers were last told: they hear only of a change.
-    private let lockedReportedStatus = Locked<(status: CGMManagerStatus, searching: Bool, note: String?)?>(nil)
+    private let lockedReportedStatus = Locked<(status: CGMManagerStatus, searching: Bool, note: String?, need: CGMDirectReadNeed?)?>(nil)
 
     public weak var cgmManagerDelegate: CGMManagerDelegate? {
         get {
@@ -829,11 +829,12 @@ extension G7CGMManager {
     /// On a change of the status, or of the search or the note, which live in the sensor.
     private func notifyStatusObservers() {
         let status = cgmManagerStatus
-        let reported = (status: status, searching: isSearchingForSensor, note: shortStatusNote)
+        let reported = (status: status, searching: isSearchingForSensor, note: shortStatusNote, need: directReadNeed)
         var changed = false
         lockedReportedStatus.mutate { last in
             if let previous = last, previous.status == reported.status,
-               previous.searching == reported.searching, previous.note == reported.note { return }
+               previous.searching == reported.searching, previous.note == reported.note,
+               previous.need == reported.need { return }
             last = reported
             changed = true
         }
@@ -909,6 +910,7 @@ extension G7CGMManager: G7SensorDelegate {
             state.peripheralIdentifier = sensor.credentials.peripheralIdentifier
             state.lastAuthenticationFailure = nil
             state.lastAuthenticationFailureDate = nil
+            state.pairingCodeRejected = false
         }
     }
 
@@ -1254,9 +1256,13 @@ extension G7CGMManager: G7SensorDelegate {
     public func sensor(_ sensor: G7Sensor, didError error: Error) {
         if let description = authenticationFailureDescription(for: error) {
             let isNew = state.lastAuthenticationFailure == nil
+            // With no key, a challenge mismatch means the code is not this sensor's (`G7AuthenticatorError`).
+            let codeRejected: Bool
+            if case G7AuthenticatorError.challengeMismatch = error { codeRejected = state.sharedKey == nil } else { codeRejected = false }
             mutateState { state in
                 state.lastAuthenticationFailure = description
                 state.lastAuthenticationFailureDate = Date()
+                if codeRejected, state.configuredByAnotherController { state.pairingCodeRejected = true }
             }
             if isNew {
                 issueLifecycleAlert(.connectionRefused)
@@ -1266,10 +1272,11 @@ extension G7CGMManager: G7SensorDelegate {
     }
 
     public func sensor(_ sensor: G7Sensor, didRead message: G7GlucoseMessage) {
-        if state.lastAuthenticationFailure != nil {
+        if state.lastAuthenticationFailure != nil || state.pairingCodeRejected {
             mutateState { state in
                 state.lastAuthenticationFailure = nil
                 state.lastAuthenticationFailureDate = nil
+                state.pairingCodeRejected = false
             }
             retractLifecycleAlert(.connectionRefused)
         }
