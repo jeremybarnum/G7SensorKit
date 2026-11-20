@@ -20,7 +20,8 @@ extension G7CGMManager {
         let state = self.state
         guard state.configuredByAnotherController, state.sharedKey == nil else { return nil }
         guard state.pairingCode != nil else { return .pairingCode }
-        return state.pairingCodeRejected ? .pairingCodeRejected : .firstConnection
+        if state.pairingCodeRejected { return .pairingCodeRejected }
+        return isLinkUp ? .checkingCode : .firstConnection
     }
 }
 
