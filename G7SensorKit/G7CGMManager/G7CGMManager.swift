@@ -1497,4 +1497,18 @@ extension G7CGMManager: DeviceConfigurationSharing {
     /// The user's Read on Apple Watch setting.
     public var isConfigurationSharingEnabled: Bool { isWatchDirectReadEnabled }
 
+    /// The controller that passed this manager its configuration moved to a different sensor or code:
+    /// take it on here, as a pairing does on the phone, keeping the session and its central.
+    public func adoptConfiguration(_ configuration: SharedDeviceConfiguration) -> Bool {
+        guard state.configuredByAnotherController, configuration.managerIdentifier == pluginIdentifier else {
+            return false
+        }
+        cancelSuspectedSessionEndScan()
+        let newState = mutateState { state in
+            state = G7CGMManagerState.adopted(from: configuration.state)
+        }
+        logDeviceCommunication("The phone's sensor changed to \(newState.sensorID ?? "an unnamed sensor"); following it on the same connection", type: .connection)
+        sensor.switchSensor(credentials: newState.sensorCredentials)
+        return true
+    }
 }
