@@ -239,6 +239,16 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertEqual(manager.sensor.credentials.pairingCode, "9999")
     }
 
+    /// The watch's `directReadNeed` (watch target only) reports `.checkingCode` from this.
+    func testTheLinkIsUpFromConnectionToDisconnection() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        XCTAssertFalse(manager.isLinkUp)
+        manager.sensorDidConnect(manager.sensor, name: sensorID)
+        XCTAssertTrue(manager.isLinkUp)
+        manager.sensorDisconnected(manager.sensor, suspectedEndOfSession: false)
+        XCTAssertFalse(manager.isLinkUp)
+    }
+
     func testAManagerSetUpHereDoesNotTakeAnotherControllersConfiguration() {
         let manager = makeManager(state: phoneState)
         var next = phoneState

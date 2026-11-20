@@ -87,6 +87,10 @@ public class G7CGMManager: CGMManager {
 
     private let statusObservers = WeakSynchronizedSet<CGMManagerStatusObserver>()
 
+    /// A link to the sensor is up, from its connection to its disconnection, readings or not.
+    private let lockedLinkUp = Locked(false)
+    var isLinkUp: Bool { lockedLinkUp.value }
+
     /// What status observers were last told: they hear only of a change.
     private let lockedReportedStatus = Locked<(status: CGMManagerStatus, searching: Bool, note: String?, need: CGMDirectReadNeed?)?>(nil)
 
@@ -1122,6 +1126,7 @@ extension G7CGMManager: G7SensorDelegate {
     }
 
     public func sensorDidConnect(_ sensor: G7Sensor, name: String) {
+        lockedLinkUp.value = true
         mutateState { state in
             state.latestConnect = Date()
         }
@@ -1129,6 +1134,8 @@ extension G7CGMManager: G7SensorDelegate {
     }
 
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
+        lockedLinkUp.value = false
+        notifyStatusObservers()
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
         if suspectedEndOfSession {
             scheduleScanAfterSuspectedSessionEnd()
