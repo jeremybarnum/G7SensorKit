@@ -1072,6 +1072,14 @@ extension G7CGMManager: G7SensorDelegate {
     }
 
     /// Its own namespace, so a calibration never dedup-collides with a sensor reading.
+    /// Whether a reading's sync identifier names this manager's sensor. Readings and calibrations both
+    /// carry the sensor's name as their second word; nil when there is no sensor or no name to compare.
+    func syncIdentifierNamesThisSensor(_ syncIdentifier: String) -> Bool? {
+        let words = syncIdentifier.split(separator: " ")
+        guard let sensorID = state.sensorID, words.count >= 3 else { return nil }
+        return words[1] == sensorID
+    }
+
     private func calibrationSyncIdentifier(glucose: UInt16, date: Date) -> String {
         "calibration \(state.sensorID ?? "unknown") \(date.timeIntervalSince1970) \(glucose)"
     }

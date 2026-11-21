@@ -249,6 +249,16 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertFalse(manager.isLinkUp)
     }
 
+    /// The watch's `readIsFromThisSensor` (watch target only) answers from this: after the phone moves to a
+    /// new sensor, its latest reading is still the old sensor's.
+    func testASyncIdentifierNamesTheSensorItCameFrom() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        XCTAssertEqual(manager.syncIdentifierNamesThisSensor("491234 \(sensorID) 3600"), true)
+        XCTAssertEqual(manager.syncIdentifierNamesThisSensor("491234 DXCM77 3600"), false)
+        XCTAssertEqual(manager.syncIdentifierNamesThisSensor("calibration \(sensorID) 1700000000.0 120"), true)
+        XCTAssertNil(manager.syncIdentifierNamesThisSensor("invalid"))
+    }
+
     func testAManagerSetUpHereDoesNotTakeAnotherControllersConfiguration() {
         let manager = makeManager(state: phoneState)
         var next = phoneState

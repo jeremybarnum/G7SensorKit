@@ -23,6 +23,10 @@ extension G7CGMManager {
         if state.pairingCodeRejected { return .pairingCodeRejected }
         return isLinkUp ? .checkingCode : .firstConnection
     }
+
+    public func readIsFromThisSensor(syncIdentifier: String) -> Bool? {
+        syncIdentifierNamesThisSensor(syncIdentifier)
+    }
 }
 
 /// The watch loads this kit at run time, as the phone loads its plugins: this is the bundle's principal class.
