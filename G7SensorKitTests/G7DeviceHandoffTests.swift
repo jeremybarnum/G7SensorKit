@@ -214,7 +214,7 @@ final class G7DeviceHandoffTests: XCTestCase {
         next.sensorID = "DXCM77"
         next.pairingCode = "5678"
         next.activatedAt = Date()
-        XCTAssertTrue(manager.adoptConfiguration(makeManager(state: next).exportConfiguration()))
+        manager.adoptConfiguration(makeManager(state: next).exportConfiguration())
 
         XCTAssertTrue(manager.sensor === session, "the same session")
         XCTAssertTrue(manager.sensor.bluetoothManager === central,
@@ -234,7 +234,7 @@ final class G7DeviceHandoffTests: XCTestCase {
         let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
         var next = phoneState
         next.pairingCode = "9999"
-        XCTAssertTrue(manager.adoptConfiguration(makeManager(state: next).exportConfiguration()))
+        manager.adoptConfiguration(makeManager(state: next).exportConfiguration())
         XCTAssertEqual(manager.sensor.sensorID, sensorID)
         XCTAssertEqual(manager.sensor.credentials.pairingCode, "9999")
     }
@@ -259,11 +259,11 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertNil(manager.syncIdentifierNamesThisSensor("invalid"))
     }
 
-    func testAManagerSetUpHereDoesNotTakeAnotherControllersConfiguration() {
+    func testAManagerSetUpHereKeepsItsOwnSensor() {
         let manager = makeManager(state: phoneState)
         var next = phoneState
         next.sensorID = "DXCM77"
-        XCTAssertFalse(manager.adoptConfiguration(makeManager(state: next).exportConfiguration()))
+        manager.adoptConfiguration(makeManager(state: next).exportConfiguration())
         XCTAssertEqual(manager.state.sensorID, sensorID)
     }
 }

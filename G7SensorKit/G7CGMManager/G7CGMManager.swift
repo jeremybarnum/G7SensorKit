@@ -1504,7 +1504,7 @@ extension G7GlucoseMessage: GlucoseDisplayable {
     }
 }
 
-extension G7CGMManager: DeviceConfigurationSharing {
+extension G7CGMManager: ShareableDeviceControl {
     public func exportConfiguration() -> SharedDeviceConfiguration {
         SharedDeviceConfiguration(managerIdentifier: pluginIdentifier, asOf: Date(), state: state.sharedState)
     }
@@ -1514,16 +1514,14 @@ extension G7CGMManager: DeviceConfigurationSharing {
 
     /// The controller that passed this manager its configuration moved to a different sensor or code:
     /// take it on here, as a pairing does on the phone, keeping the session and its central.
-    public func adoptConfiguration(_ configuration: SharedDeviceConfiguration) -> Bool {
-        guard state.configuredByAnotherController, configuration.managerIdentifier == pluginIdentifier else {
-            return false
-        }
+    /// A manager the user set up on this device keeps its own sensor.
+    public func adoptConfiguration(_ configuration: SharedDeviceConfiguration) {
+        guard state.configuredByAnotherController else { return }
         cancelSuspectedSessionEndScan()
         let newState = mutateState { state in
             state = G7CGMManagerState.adopted(from: configuration.state)
         }
         logDeviceCommunication("The phone's sensor changed to \(newState.sensorID ?? "an unnamed sensor"); following it on the same connection", type: .connection)
         sensor.switchSensor(credentials: newState.sensorCredentials)
-        return true
     }
 }
