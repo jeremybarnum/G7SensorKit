@@ -259,6 +259,56 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertNil(manager.syncIdentifierNamesThisSensor("invalid"))
     }
 
+    // MARK: - A code the sensor refused
+
+    /// The watch's `directReadNeed` (watch target only) reports `.pairingCodeRejected` from this.
+    func testAPassedManagerWithoutAKeyMarksTheCodeRefused() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        XCTAssertNil(manager.state.sharedKey)
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.challengeMismatch)
+        XCTAssertTrue(manager.state.pairingCodeRejected)
+    }
+
+    func testOnlyAChallengeMismatchMarksTheCodeRefused() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.timeout(step: "test"))
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.rejected(authStatus: 1, failureCode: nil))
+        XCTAssertFalse(manager.state.pairingCodeRejected)
+    }
+
+    func testAMismatchWithAKeyHeldIsNotTheCode() {
+        var state = G7CGMManagerState.adopted(from: phoneState.sharedState)
+        state.sharedKey = Data(repeating: 9, count: 16)
+        let manager = makeManager(state: state)
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.challengeMismatch)
+        XCTAssertFalse(manager.state.pairingCodeRejected)
+    }
+
+    func testAManagerSetUpHereNeverMarksTheCodeRefused() {
+        var state = phoneState
+        state.sharedKey = nil
+        let manager = makeManager(state: state)
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.challengeMismatch)
+        XCTAssertFalse(manager.state.pairingCodeRejected)
+    }
+
+    func testARefusedCodeClearsWhenTheSensorAcceptsOne() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.challengeMismatch)
+        manager.sensor(manager.sensor, didAuthenticateWith: Data(repeating: 3, count: 16), deviceName: nil, authenticity: .simulated)
+        XCTAssertFalse(manager.state.pairingCodeRejected)
+    }
+
+    func testANewCodeFromThePhoneClearsARefusedOne() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        manager.sensor(manager.sensor, didError: G7AuthenticatorError.challengeMismatch)
+        var next = phoneState
+        next.pairingCode = "9999"
+        manager.adoptConfiguration(makeManager(state: next).exportConfiguration())
+        XCTAssertFalse(manager.state.pairingCodeRejected)
+        XCTAssertEqual(manager.state.pairingCode, "9999")
+    }
+
     func testAManagerSetUpHereKeepsItsOwnSensor() {
         let manager = makeManager(state: phoneState)
         var next = phoneState
