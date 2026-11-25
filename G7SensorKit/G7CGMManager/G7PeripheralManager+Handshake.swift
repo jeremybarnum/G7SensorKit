@@ -18,8 +18,10 @@ extension G7PeripheralManager {
     /// the sensor reassembles by byte count, and a larger MTU buys nothing.
     static let certificateChunkSize = 20
 
-    /// Pause between certificate chunks. Without it a long payload outruns the
-    /// sensor's reassembly on a write-without-response characteristic.
+    /// The longest wait for the system to take another certificate chunk before sending it anyway.
+    /// Chunks go out as fast as the system accepts them, as the Dexcom app sends them (about 25 in
+    /// 25 ms, seen 2026-11-25): a fixed pause after every chunk stretched to about 120 ms with the app
+    /// in the background and made a pairing take 11 s, past what a watch allows a background app.
     static let certificateChunkInterval: TimeInterval = 0.04
 
     func characteristic(_ uuid: CGMServiceCharacteristicUUID) throws -> CBCharacteristic {
@@ -48,11 +50,9 @@ extension G7PeripheralManager {
         while offset < data.endIndex {
             let end = data.index(offset, offsetBy: G7PeripheralManager.certificateChunkSize, limitedBy: data.endIndex)
                 ?? data.endIndex
+            waitUntilReadyToWriteWithoutResponse(atMost: G7PeripheralManager.certificateChunkInterval)
             try writeValue(data[offset ..< end], for: .certificate, type: .withoutResponse)
             offset = end
-            if offset < data.endIndex {
-                Thread.sleep(forTimeInterval: G7PeripheralManager.certificateChunkInterval)
-            }
         }
     }
 
