@@ -18,12 +18,6 @@ extension G7PeripheralManager {
     /// the sensor reassembles by byte count, and a larger MTU buys nothing.
     static let certificateChunkSize = 20
 
-    /// The longest wait for the system to take another certificate chunk before sending it anyway.
-    /// Chunks go out as fast as the system accepts them, as the Dexcom app sends them (about 25 in
-    /// 25 ms, seen 2026-11-25): a fixed pause after every chunk stretched to about 120 ms with the app
-    /// in the background and made a pairing take 11 s, past what a watch allows a background app.
-    static let certificateChunkInterval: TimeInterval = 0.04
-
     func characteristic(_ uuid: CGMServiceCharacteristicUUID) throws -> CBCharacteristic {
         guard let service = peripheral.services?.itemWithUUID(SensorServiceUUID.cgmService.cbUUID) else {
             throw PeripheralManagerError.invalidConfiguration
@@ -44,13 +38,20 @@ extension G7PeripheralManager {
     }
 
     /// Streams `data` to the certificate characteristic in the chunk size the
-    /// sensor expects.
+    /// sensor expects, one chunk straight after another, as the Dexcom app
+    /// sends them (76 chunks about 1 ms apart, seen 2026-11-25).
+    ///
+    /// A pause after each chunk (40 ms, which a watch app in the background
+    /// stretched to about 130 ms) made a pairing take 11 s, and a watch allows
+    /// a background app about 5 s of Bluetooth traffic per connection before
+    /// it counts against an allowance that ends in the app's Bluetooth being
+    /// cut off. Waiting for the system's "ready to send" callback is no
+    /// substitute: it comes only after a write has failed.
     func writeCertificateBytes(_ data: Data) throws {
         var offset = data.startIndex
         while offset < data.endIndex {
             let end = data.index(offset, offsetBy: G7PeripheralManager.certificateChunkSize, limitedBy: data.endIndex)
                 ?? data.endIndex
-            waitUntilReadyToWriteWithoutResponse(atMost: G7PeripheralManager.certificateChunkInterval)
             try writeValue(data[offset ..< end], for: .certificate, type: .withoutResponse)
             offset = end
         }

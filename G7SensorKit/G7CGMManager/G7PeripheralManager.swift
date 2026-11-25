@@ -57,9 +57,6 @@ class G7PeripheralManager: NSObject {
     /// The condition used to signal command completion
     private let commandLock = NSCondition()
 
-    /// Signalled when the system can take another write without response.
-    private let writeReadyCondition = NSCondition()
-
     /// The required conditions for the operation to complete
     private var commandConditions = [CommandCondition]()
 
@@ -419,18 +416,6 @@ extension G7PeripheralManager {
             peripheral.writeValue(value, for: characteristic, type: type)
         }
     }
-
-    /// Returns once the system can take another write without response, or after `interval`: a
-    /// write sent while its buffer is full is dropped without an error.
-    func waitUntilReadyToWriteWithoutResponse(atMost interval: TimeInterval) {
-        dispatchPrecondition(condition: .onQueue(queue))
-        writeReadyCondition.lock()
-        defer { writeReadyCondition.unlock() }
-        let deadline = Date(timeIntervalSinceNow: interval)
-        while !peripheral.canSendWriteWithoutResponse, peripheral.state == .connected {
-            guard writeReadyCondition.wait(until: deadline) else { return }
-        }
-    }
 }
 
 
@@ -587,12 +572,6 @@ extension G7PeripheralManager: CBPeripheralDelegate {
             // If we weren't expecting this notification, pass it along to the delegate
             delegate?.peripheralManager(self, didUpdateValueFor: characteristic)
         }
-    }
-
-    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
-        writeReadyCondition.lock()
-        writeReadyCondition.broadcast()
-        writeReadyCondition.unlock()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
