@@ -249,6 +249,67 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertFalse(manager.isLinkUp)
     }
 
+    /// A key is not enough to read the sensor: the sensor sends readings only to a display whose Bluetooth
+    /// bond it has confirmed. Until then the watch still has a need, and Start stays refused.
+    func testAKeyWithoutTheBondStillLeavesANeed() {
+        var adopted = G7CGMManagerState.adopted(from: phoneState.sharedState)
+        adopted.sharedKey = Data(repeating: 1, count: 16)
+        let manager = makeManager(state: adopted)
+        XCTAssertNil(manager.passedSensorNeed, "a watch that paired before this was recorded is taken as bonded")
+
+        manager.sensor(manager.sensor, bondIsConfirmed: false)
+        XCTAssertTrue(manager.state.bondPending)
+        XCTAssertEqual(manager.passedSensorNeed, .firstConnection)
+
+        manager.sensorDidConnect(manager.sensor, name: sensorID)
+        XCTAssertEqual(manager.passedSensorNeed, .checkingCode)
+        manager.sensorIsAwaitingPairingAcceptance(manager.sensor)
+        XCTAssertEqual(manager.passedSensorNeed, .pairingAcceptance, "the sensor keeps the link for the pairing request")
+
+        manager.sensorDisconnected(manager.sensor, suspectedEndOfSession: false)
+        XCTAssertEqual(manager.passedSensorNeed, .firstConnection, "unanswered: the next connection asks again")
+
+        manager.sensorDidConnect(manager.sensor, name: sensorID)
+        manager.sensorIsAwaitingPairingAcceptance(manager.sensor)
+        manager.sensor(manager.sensor, bondIsConfirmed: true)
+        XCTAssertFalse(manager.state.bondPending)
+        XCTAssertNil(manager.passedSensorNeed)
+    }
+
+    func testAPendingBondSurvivesARestore() {
+        var adopted = G7CGMManagerState.adopted(from: phoneState.sharedState)
+        adopted.sharedKey = Data(repeating: 1, count: 16)
+        adopted.bondPending = true
+        let restored = G7CGMManagerState(rawValue: adopted.rawValue)
+        XCTAssertTrue(restored.bondPending)
+        XCTAssertNil(G7CGMManagerState.adopted(from: phoneState.sharedState).rawValue["bondPending"], "not written when there is none")
+    }
+
+    /// The first pairing: the pairing request is asked for before the watch holds a key.
+    func testAFirstPairingAsksForThePairingRequestToo() {
+        let manager = makeManager(state: G7CGMManagerState.adopted(from: phoneState.sharedState))
+        XCTAssertEqual(manager.passedSensorNeed, .firstConnection)
+        manager.sensorDidConnect(manager.sensor, name: sensorID)
+        manager.sensorIsAwaitingPairingAcceptance(manager.sensor)
+        XCTAssertEqual(manager.passedSensorNeed, .pairingAcceptance)
+    }
+
+    func testComingOnScreenIsAnnouncedOnce() {
+        let presence = G7AppPresence(onScreen: false)
+        XCTAssertFalse(presence.canShowPairingRequest)
+        let announced = expectation(forNotification: G7AppPresence.didComeOnScreen, object: presence)
+        presence.setOnScreen(true)
+        wait(for: [announced], timeout: 1)
+        XCTAssertTrue(presence.canShowPairingRequest)
+
+        let again = expectation(forNotification: G7AppPresence.didComeOnScreen, object: presence)
+        again.isInverted = true
+        presence.setOnScreen(true)
+        wait(for: [again], timeout: 0.2)
+        presence.setOnScreen(false)
+        XCTAssertFalse(presence.canShowPairingRequest)
+    }
+
     /// The watch's `readIsFromThisSensor` (watch target only) answers from this: after the phone moves to a
     /// new sensor, its latest reading is still the old sensor's.
     func testASyncIdentifierNamesTheSensorItCameFrom() {

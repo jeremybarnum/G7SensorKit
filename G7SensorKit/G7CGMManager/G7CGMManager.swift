@@ -91,6 +91,28 @@ public class G7CGMManager: CGMManager {
     private let lockedLinkUp = Locked(false)
     var isLinkUp: Bool { lockedLinkUp.value }
 
+    /// The handshake on the link now up reached its bond step: the system's pairing request is showing,
+    /// or will once the app is on screen. Cleared by the bond and by the link closing.
+    private let lockedAwaitingPairingAcceptance = Locked(false)
+    var isAwaitingPairingAcceptance: Bool { lockedAwaitingPairingAcceptance.value }
+
+    /// For a manager passed its sensor by another controller (a watch): what it still needs before it can
+    /// read the sensor by itself. It can once it holds its own key and the sensor has confirmed its
+    /// Bluetooth bond: a manager built for another sensor, or from a new code, starts with neither, and a
+    /// key without the bond gets no readings.
+    var passedSensorNeed: CGMDirectReadNeed? {
+        let state = self.state
+        guard state.configuredByAnotherController else { return nil }
+        if state.sharedKey == nil {
+            guard state.pairingCode != nil else { return .pairingCode }
+            if state.pairingCodeRejected { return .pairingCodeRejected }
+        } else if !state.bondPending {
+            return nil
+        }
+        if isAwaitingPairingAcceptance { return .pairingAcceptance }
+        return isLinkUp ? .checkingCode : .firstConnection
+    }
+
     /// What status observers were last told: they hear only of a change.
     private let lockedReportedStatus = Locked<(status: CGMManagerStatus, searching: Bool, note: String?, need: CGMDirectReadNeed?)?>(nil)
 
@@ -935,6 +957,24 @@ extension G7CGMManager: G7SensorDelegate {
         }
     }
 
+    public func sensor(_ sensor: G7Sensor, bondIsConfirmed confirmed: Bool) {
+        if confirmed {
+            lockedAwaitingPairingAcceptance.value = false
+        }
+        if state.bondPending == confirmed {
+            mutateState { $0.bondPending = !confirmed }
+            logDeviceCommunication(confirmed
+                ? "The sensor confirmed this device's Bluetooth bond"
+                : "This device has no Bluetooth bond with the sensor yet: no readings until its pairing request is accepted", type: .connection)
+        }
+        notifyStatusObservers()
+    }
+
+    public func sensorIsAwaitingPairingAcceptance(_ sensor: G7Sensor) {
+        lockedAwaitingPairingAcceptance.value = true
+        notifyStatusObservers()
+    }
+
     public func sensorPairingDidNotFinish(_ sensor: G7Sensor) {
         logDeviceCommunication("The last pairing did not finish (its Bluetooth bond was never confirmed); the next connection pairs again, with the app open", type: .connection)
         pairingUnfinishedAlertPending = true
@@ -1143,6 +1183,7 @@ extension G7CGMManager: G7SensorDelegate {
 
     public func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
         lockedLinkUp.value = false
+        lockedAwaitingPairingAcceptance.value = false
         notifyStatusObservers()
         logDeviceCommunication("Sensor disconnected: suspectedEndOfSession=\(suspectedEndOfSession)", type: .connection)
         if suspectedEndOfSession {

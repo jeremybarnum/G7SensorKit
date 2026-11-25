@@ -14,15 +14,7 @@ extension G7CGMManager {
         G7WatchDirectRead.needsCodeNote(for: needsCodeForSensor) ?? G7WatchDirectRead.searchingNote(isSearchingForSensor)
     }
 
-    /// The watch has read the sensor by itself once it holds its own key: a manager built for another
-    /// sensor, or from a new code, starts without one.
-    public var directReadNeed: CGMDirectReadNeed? {
-        let state = self.state
-        guard state.configuredByAnotherController, state.sharedKey == nil else { return nil }
-        guard state.pairingCode != nil else { return .pairingCode }
-        if state.pairingCodeRejected { return .pairingCodeRejected }
-        return isLinkUp ? .checkingCode : .firstConnection
-    }
+    public var directReadNeed: CGMDirectReadNeed? { passedSensorNeed }
 
     public func readIsFromThisSensor(syncIdentifier: String) -> Bool? {
         syncIdentifierNamesThisSensor(syncIdentifier)

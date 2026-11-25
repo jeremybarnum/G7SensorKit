@@ -139,6 +139,10 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
     /// Cleared by an authentication or a reading; a new code builds a new manager.
     var pairingCodeRejected = false
 
+    /// Direct mode: the sensor has not confirmed this device's Bluetooth bond, as of its last handshake.
+    /// A key without the bond gets no readings.
+    var bondPending = false
+
     init() {
     }
 
@@ -201,6 +205,7 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         self.configuredByAnotherController = rawValue["configuredByAnotherController"] as? Bool ?? false
         self.watchDirectReadEnabled = rawValue["watchDirectReadEnabled"] as? Bool ?? false
         self.pairingCodeRejected = rawValue["pairingCodeRejected"] as? Bool ?? false
+        self.bondPending = rawValue["bondPending"] as? Bool ?? false
         // A manager passed its configuration reads directly: there is no session to eavesdrop on.
         // Without a code it stands down until a new configuration brings one.
         if configuredByAnotherController {
@@ -256,6 +261,9 @@ public struct G7CGMManagerState: RawRepresentable, Equatable {
         }
         if pairingCodeRejected {
             rawValue["pairingCodeRejected"] = true
+        }
+        if bondPending {
+            rawValue["bondPending"] = true
         }
         return rawValue
     }
