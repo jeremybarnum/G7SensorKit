@@ -294,7 +294,7 @@ final class G7Authenticator {
         do {
             try exchangeCertificates(peripheral, authentication: authentication)
             try answerKeyChallenge(peripheral, authentication: authentication)
-            bond = try finalizeAndBond(peripheral, authentication: authentication)
+            bond = try finalizeAndBond(peripheral, authentication: authentication, sensorReportsBond: status.isBonded)
         } catch where !didExchangeKeys {
             // Authenticated but not bonded on a reconnect (05 01 02 after the system bond was lost): the key
             // still holds, so the certificate phase bonds again. If that fails, pair again as before.
@@ -546,7 +546,13 @@ final class G7Authenticator {
 
     // MARK: - Finalize
 
-    private func finalizeAndBond(_ peripheral: G7PeripheralManager, authentication: G7AuthMessageBuffer) throws -> BondOutcome {
+    /// `sensorReportsBond`: the sensor's verdict said this device's Bluetooth bond is intact (a new key for a
+    /// sensor the system already paired with). The system then shows no pairing request, so there is nothing
+    /// to hold back and nobody to ask.
+    private func finalizeAndBond(_ peripheral: G7PeripheralManager, authentication: G7AuthMessageBuffer, sensorReportsBond: Bool) throws -> BondOutcome {
+        guard !sensorReportsBond else {
+            return try requestBond(peripheral, authentication: authentication)
+        }
         bondStepHandler?()
         guard shouldHoldBondRequest() else {
             return try requestBond(peripheral, authentication: authentication)
