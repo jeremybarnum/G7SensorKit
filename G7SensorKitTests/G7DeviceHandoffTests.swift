@@ -276,6 +276,23 @@ final class G7DeviceHandoffTests: XCTestCase {
         XCTAssertNil(manager.passedSensorNeed)
     }
 
+    /// A watch that was bonded and lost its bond, with the app on screen: the handshake waits at the
+    /// system's pairing request and has not ended, yet the watch already asks for the request to be accepted.
+    func testALostBondAsksForThePairingRequestWhileTheHandshakeWaits() {
+        var adopted = G7CGMManagerState.adopted(from: phoneState.sharedState)
+        adopted.sharedKey = Data(repeating: 1, count: 16)
+        let manager = makeManager(state: adopted)
+        XCTAssertNil(manager.passedSensorNeed)
+
+        manager.sensorDidConnect(manager.sensor, name: sensorID)
+        manager.sensorIsAwaitingPairingAcceptance(manager.sensor)
+        XCTAssertTrue(manager.state.bondPending)
+        XCTAssertEqual(manager.passedSensorNeed, .pairingAcceptance)
+
+        manager.sensorDisconnected(manager.sensor, suspectedEndOfSession: false)
+        XCTAssertEqual(manager.passedSensorNeed, .firstConnection, "unanswered: the bond is still missing")
+    }
+
     func testAPendingBondSurvivesARestore() {
         var adopted = G7CGMManagerState.adopted(from: phoneState.sharedState)
         adopted.sharedKey = Data(repeating: 1, count: 16)

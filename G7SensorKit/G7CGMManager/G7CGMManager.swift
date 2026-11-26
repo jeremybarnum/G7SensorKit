@@ -99,7 +99,9 @@ public class G7CGMManager: CGMManager {
     /// For a manager passed its sensor by another controller (a watch): what it still needs before it can
     /// read the sensor by itself. It can once it holds its own key and the sensor has confirmed its
     /// Bluetooth bond: a manager built for another sensor, or from a new code, starts with neither, and a
-    /// key without the bond gets no readings.
+    /// key without the bond gets no readings. Such a manager always reads directly, whether the phone runs
+    /// alongside the Dexcom app or connects directly; alongside the Dexcom app the phone has no key to pass
+    /// on, so the pairing code has to be entered in Loop's G7 settings on the phone.
     var passedSensorNeed: CGMDirectReadNeed? {
         let state = self.state
         guard state.configuredByAnotherController else { return nil }
@@ -970,8 +972,15 @@ extension G7CGMManager: G7SensorDelegate {
         notifyStatusObservers()
     }
 
+    /// The handshake reaches its bond step only when the sensor said this device's bond is missing, so the
+    /// bond is pending from here, before the handshake ends: with the app on screen it ends only once the
+    /// pairing request is answered or the link closes.
     public func sensorIsAwaitingPairingAcceptance(_ sensor: G7Sensor) {
         lockedAwaitingPairingAcceptance.value = true
+        if !state.bondPending {
+            mutateState { $0.bondPending = true }
+            logDeviceCommunication("This device has no Bluetooth bond with the sensor yet: no readings until its pairing request is accepted", type: .connection)
+        }
         notifyStatusObservers()
     }
 
